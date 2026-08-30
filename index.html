@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="ALICE - Advanced Intelligence & Learning Interactive Companion Engine">
+    <meta name="theme-color" content="#0a0a0f">
+    <title>ALICE - AI Command Interface</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <!-- ========================================
+         AUTHENTICATION SCREEN
+         ======================================== -->
+    <div id="auth-screen" class="screen active">
+        <div class="auth-container">
+            <div class="auth-logo">
+                <div class="auth-logo-icon"></div>
+                <h1 class="auth-title">ALICE</h1>
+                <p class="auth-subtitle">Advanced Intelligence System</p>
+            </div>
+            
+            <form class="auth-form" id="auth-form">
+                <div class="auth-input-wrapper">
+                    <input 
+                        type="password" 
+                        class="auth-input" 
+                        id="pin-input"
+                        maxlength="8"
+                        placeholder="• • • •"
+                        autocomplete="off"
+                        inputmode="numeric"
+                        pattern="[0-9]*"
+                        aria-label="Enter PIN"
+                    >
+                </div>
+                
+                <div class="pin-dots" aria-hidden="true">
+                    <span class="pin-dot"></span>
+                    <span class="pin-dot"></span>
+                    <span class="pin-dot"></span>
+                    <span class="pin-dot"></span>
+                </div>
+                
+                <button type="submit" class="auth-button">
+                    <span>Access System</span>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+                        <polyline points="10 17 15 12 10 7"/>
+                        <line x1="15" y1="12" x2="3" y2="12"/>
+                    </svg>
+                </button>
+                
+                <p class="auth-status" id="auth-status" aria-live="polite"></p>
+            </form>
+        </div>
+    </div>
+
+    <!-- ========================================
+         BOOT SCREEN
+         ======================================== -->
+    <div id="boot-screen" class="screen">
+        <div class="boot-container">
+            <div class="boot-header">
+                <h2 class="boot-title">ALICE INITIALIZATION</h2>
+                <p class="boot-subtitle">System Boot Sequence v0.1.0</p>
+            </div>
+            
+            <div class="boot-progress">
+                <div class="boot-progress-fill"></div>
+            </div>
+            
+            <div class="boot-status">
+                <p class="boot-status-text">Preparing systems...</p>
+            </div>
+            
+            <div class="boot-items">
+                <!-- Boot items rendered dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================
+         HUD SCREEN
+         ======================================== -->
+    <div id="hud-screen" class="screen">
+        <!-- Top Bar -->
+        <div class="hud-top-bar">
+            <div class="hud-logo">
+                <div class="hud-logo-icon"></div>
+                <span class="hud-logo-text">ALICE</span>
+            </div>
+            
+            <div class="hud-time-date">
+                <div class="hud-time time-display">00:00:00</div>
+                <div class="hud-date date-display">Loading...</div>
+            </div>
+            
+            <div class="hud-status-badge idle status-badge">
+                <span class="status-text">Ready</span>
+            </div>
+        </div>
+        
+        <!-- Main HUD -->
+        <div class="hud-main">
+            <!-- Left Panel - System Status -->
+            <div class="hud-left-panel">
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-icon">◆</span>
+                        <span class="hud-panel-title">System Status</span>
+                    </div>
+                    
+                    <div class="metric-item metric-cpu">
+                        <div class="metric-header">
+                            <span class="metric-label">CPU</span>
+                            <span class="metric-value">0%</span>
+                        </div>
+                        <div class="metric-bar-container">
+                            <div class="metric-bar"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-item metric-memory">
+                        <div class="metric-header">
+                            <span class="metric-label">Memory</span>
+                            <span class="metric-value">0%</span>
+                        </div>
+                        <div class="metric-bar-container">
+                            <div class="metric-bar"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="metric-item metric-network">
+                        <div class="metric-header">
+                            <span class="metric-label">Network</span>
+                            <span class="metric-value">0%</span>
+                        </div>
+                        <div class="metric-bar-container">
+                            <div class="metric-bar"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-icon">◈</span>
+                        <span class="hud-panel-title">Quick Actions</span>
+                    </div>
+                    
+                    <div class="quick-actions">
+                        <button class="quick-action" type="button">Help</button>
+                        <button class="quick-action" type="button">Settings</button>
+                        <button class="quick-action" type="button">Commands</button>
+                        <button class="quick-action" type="button">Logs</button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Center Panel - ALICE Core -->
+            <div class="hud-center-panel">
+                <div class="alice-orb-container">
+                    <div class="alice-orb idle">
+                        <div class="orb-ring"></div>
+                        <div class="orb-ring"></div>
+                        <div class="orb-ring"></div>
+                        <div class="orb-particles"></div>
+                        <div class="orb-core"></div>
+                        <div class="orb-core-glow"></div>
+                    </div>
+                </div>
+                
+                <div class="state-indicator idle">
+                    <div class="state-label">Current State</div>
+                    <div class="state-text">IDLE</div>
+                </div>
+                
+                <div class="waveform-container">
+                    <canvas class="waveform-canvas"></canvas>
+                </div>
+            </div>
+            
+            <!-- Right Panel - Activity Log -->
+            <div class="hud-right-panel">
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-icon">◇</span>
+                        <span class="hud-panel-title">Activity Log</span>
+                    </div>
+                    
+                    <div class="activity-log-content">
+                        <!-- Activity items rendered dynamically -->
+                    </div>
+                </div>
+                
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-icon">◎</span>
+                        <span class="hud-panel-title">System Info</span>
+                    </div>
+                    
+                    <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">
+                        <div style="margin-bottom: 8px;">
+                            <span style="color: var(--text-secondary);">Version:</span> 0.1.0 ALPHA
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <span style="color: var(--text-secondary);">Build:</span> 2026.08.30
+                        </div>
+                        <div>
+                            <span style="color: var(--text-secondary);">Status:</span> 
+                            <span style="color: var(--accent);">Online</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================
+         DEBUG PANEL
+         ======================================== -->
+    <div id="debug-panel">
+        <div class="debug-header">
+            <span class="debug-title">Debug Controls</span>
+            <button class="debug-close" aria-label="Close">&times;</button>
+        </div>
+        
+        <div class="debug-section">
+            <div class="debug-label">Simulate States</div>
+            <div class="debug-buttons">
+                <button class="debug-btn active" data-state="IDLE">IDLE</button>
+                <button class="debug-btn" data-state="LISTENING">LISTENING</button>
+                <button class="debug-btn" data-state="PROCESSING">PROCESSING</button>
+                <button class="debug-btn" data-state="SPEAKING">SPEAKING</button>
+                <button class="debug-btn" data-state="EXECUTING">EXECUTING</button>
+            </div>
+        </div>
+        
+        <div class="debug-section">
+            <button id="logout-btn" class="debug-btn" style="width: 100%;">Logout</button>
+        </div>
+    </div>
+    
+    <button id="debug-toggle" aria-label="Show debug panel">DBG</button>
+
+    <!-- Scripts -->
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
