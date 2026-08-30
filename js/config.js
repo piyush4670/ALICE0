@@ -1,7 +1,7 @@
 /**
  * ALICE Configuration
  * Central configuration for the ALICE interface
- * Part 2: Voice systems integrated
+ * Part 3: Memory, Tools & Skills integrated
  */
 export const CONFIG = {
     // Authentication (placeholder - replace with real auth in Part 4)
@@ -14,18 +14,21 @@ export const CONFIG = {
 
     // Boot sequence configuration
     boot: {
-        sequenceDuration: 3500, // Total boot animation duration
-        itemDelay: 500, // Delay between each boot item
+        sequenceDuration: 4000, // Total boot animation duration
+        itemDelay: 450, // Delay between each boot item
         progressSpeed: 100 // Update frequency for progress bar
     },
 
-    // Application states
+    // Application states (including skill execution states)
     states: {
         IDLE: 'IDLE',
         LISTENING: 'LISTENING',
         PROCESSING: 'PROCESSING',
         SPEAKING: 'SPEAKING',
-        EXECUTING: 'EXECUTING'
+        EXECUTING: 'EXECUTING',
+        UNDERSTANDING: 'UNDERSTANDING',
+        SELECTING_TOOL: 'SELECTING_TOOL',
+        COMPLETING: 'COMPLETING'
     },
 
     // Voice configuration
@@ -38,6 +41,17 @@ export const CONFIG = {
         ttsRate: 0.95,
         ttsPitch: 1.0,
         ttsVolume: 1.0
+    },
+
+    // Skills configuration
+    skills: {
+        enabled: true,
+        // Risk levels for permission system
+        riskLevels: {
+            low: ['datetime', 'calculator', 'notes', 'reminders', 'memory'],
+            medium: ['websearch', 'files', 'reader'],
+            high: [] // Would require confirmation
+        }
     },
 
     // Visual configuration
@@ -54,8 +68,8 @@ export const CONFIG = {
 
     // System info
     system: {
-        version: '0.2.0',
-        codename: 'BETA',
+        version: '0.3.0',
+        codename: 'GAMMA',
         buildDate: '2026-08-30'
     },
 
@@ -63,9 +77,9 @@ export const CONFIG = {
     interfaces: {
         speechRecognition: 'Web Speech API', // Part 2: Implemented
         textToSpeech: 'Web Speech API', // Part 2: Implemented
-        aiBrain: null, // Part 3: AI backend
-        memory: null, // Part 4: Memory system
-        tools: null // Part 5: Tool execution
+        aiBrain: null, // Part 3: Skills system
+        memory: 'localStorage', // Part 3: Implemented
+        tools: 'Skill System' // Part 3: Implemented
     }
 };
 
@@ -75,3 +89,4 @@ Object.freeze(CONFIG.states);
 Object.freeze(CONFIG.visuals);
 Object.freeze(CONFIG.system);
 Object.freeze(CONFIG.voice);
+Object.freeze(CONFIG.skills);

@@ -1,6 +1,6 @@
 /**
  * ALICE Conversation Manager
- * Handles the voice interaction flow
+ * Handles the voice interaction flow with skill integration
  */
 import { CONFIG } from './config.js';
 import { state } from './state.js';
@@ -8,6 +8,8 @@ import { audioManager } from './audio.js';
 import { wakeWordDetector } from './wakeword.js';
 import { stt } from './stt.js';
 import { tts } from './tts.js';
+import { skillManager } from './skillManager.js';
+import { memory } from './memory.js';
 
 class ConversationManager {
     constructor() {
@@ -58,6 +60,8 @@ class ConversationManager {
         }
 
         state.logActivity('Conversation system initialized', 'success');
+        state.logActivity(`Skills loaded: ${skillManager.getSkills().map(s => s.name).join(', ')}`, 'info');
+        
         return true;
     }
 
@@ -190,7 +194,7 @@ class ConversationManager {
      * Speak acknowledgment after wake word
      */
     _speakAck() {
-        const acks = ['Yes?', 'I\'m listening', 'How can I help?'];
+        const acks = ['Yes?', 'I\'m listening', 'How can I help?', 'Ready.'];
         const ack = acks[Math.floor(Math.random() * acks.length)];
         tts.speak(ack);
     }
@@ -237,7 +241,7 @@ class ConversationManager {
     /**
      * Process the recognized command
      */
-    _processCommand(text) {
+    async _processCommand(text) {
         if (!text || text.trim().length === 0) {
             // No speech detected, go back to wake mode
             state.set('aliceState', CONFIG.states.IDLE);
@@ -249,24 +253,50 @@ class ConversationManager {
 
         // Add to history
         this._addToHistory('user', text);
+        state.addToConversation('user', text);
         
         state.logActivity(`User said: "${text}"`, 'info');
         state.set('aliceState', CONFIG.states.PROCESSING);
 
-        // Generate response
-        const response = this._generateResponse(text);
+        // Process through skill system
+        const result = await this._processWithSkills(text);
         
         // Speak response
-        this._speakResponse(response);
+        this._speakResponse(result.response, result.skill);
     }
 
     /**
-     * Generate a response (placeholder - Part 3 will connect AI)
+     * Process command through skill system
      */
-    _generateResponse(text) {
+    async _processWithSkills(text) {
+        state.set('aliceState', CONFIG.states.UNDERSTANDING);
+        
+        // Try skill system first
+        const skillResult = await skillManager.process(text);
+        
+        if (skillResult.success) {
+            state.setSkillState(skillResult.skill || 'unknown', skillResult);
+            
+            // Handle interactive results
+            if (skillResult.interactive) {
+                return { response: skillResult.result, skill: 'interaction' };
+            }
+            
+            return { response: skillResult.result, skill: skillManager.getLastSkill() };
+        }
+        
+        // Fall back to basic responses
+        const basicResponse = this._generateBasicResponse(text);
+        return { response: basicResponse, skill: 'basic' };
+    }
+
+    /**
+     * Generate basic responses (fallback when no skill matches)
+     */
+    _generateBasicResponse(text) {
         const lower = text.toLowerCase().trim();
         
-        // Basic pattern matching for demo
+        // Basic pattern matching
         if (lower.includes('hello') || lower.includes('hi ') || lower.includes('hey')) {
             return 'Hello! How are you doing today?';
         }
@@ -277,26 +307,6 @@ class ConversationManager {
         
         if (lower.includes('what is your name') || lower.includes("what's your name")) {
             return 'My name is ALICE, which stands for Advanced Learning and Intelligence Companion Engine.';
-        }
-        
-        if (lower.includes('capital of japan') || lower.includes('japan capital')) {
-            return 'The capital of Japan is Tokyo.';
-        }
-        
-        if (lower.includes('capital of') && lower.includes('france')) {
-            return 'The capital of France is Paris.';
-        }
-        
-        if (lower.includes('capital of') && lower.includes('germany')) {
-            return 'The capital of Germany is Berlin.';
-        }
-        
-        if (lower.includes('capital of') && lower.includes('india')) {
-            return 'The capital of India is New Delhi.';
-        }
-        
-        if (lower.includes('capital of') && lower.includes('australia')) {
-            return 'The capital of Australia is Canberra. Note that many people mistakenly think it\'s Sydney, but Canberra is actually the capital.';
         }
         
         if (lower.includes('time')) {
@@ -321,22 +331,18 @@ class ConversationManager {
         }
         
         if (lower.includes('help')) {
-            return "I can answer questions, tell you the time, or just chat. Try asking me something like 'what is the capital of France' or just say hello!";
+            return "I can help you with many things! Try saying 'calculate 25 percent of 800', 'remind me to call mom at 6 PM', 'remember that my favorite color is blue', or 'search the web for weather'. What would you like to do?";
         }
         
         if (lower.includes('who are you') || lower.includes('what are you')) {
-            return "I'm ALICE, an AI assistant. I'm here to help you with various tasks, answer questions, and have conversations. What would you like to know?";
-        }
-        
-        if (lower.includes('weather')) {
-            return "I don't have access to weather data yet, but I'm working on it! Check back in a future update.";
+            return "I'm ALICE, an AI assistant with skills in calculations, reminders, notes, web search, and memory. Just say 'help' to learn more about what I can do!";
         }
         
         // Default response
         const defaults = [
-            "That's an interesting question. I'm still learning, so I might not have the answer yet.",
-            "I understand. I'm not quite sure how to respond to that, but I'm always improving!",
-            "Interesting thought! I'm here to help, so feel free to ask me something else."
+            "That's interesting! I'm not sure how to help with that specifically, but try saying 'help' to learn about my skills.",
+            "I understand. I'm here to help with calculations, reminders, notes, web search, and remembering things. What would you like assistance with?",
+            "I'm here to help! Try asking me to calculate something, set a reminder, save a note, or search the web."
         ];
         
         return defaults[Math.floor(Math.random() * defaults.length)];
@@ -345,13 +351,16 @@ class ConversationManager {
     /**
      * Speak the response
      */
-    _speakResponse(text) {
+    _speakResponse(text, skill = null) {
         state.set('aliceState', CONFIG.states.SPEAKING);
         
         // Add to history
         this._addToHistory('alice', text);
+        state.addToConversation('alice', text);
+        state.setLastResponse(text);
         
-        state.logActivity(`ALICE: "${text}"`, 'info');
+        const logMsg = skill ? `ALICE (${skill}): "${text}"` : `ALICE: "${text}"`;
+        state.logActivity(logMsg, 'info');
         
         // Callback for UI
         if (this._onAliceSpeak) {
@@ -480,6 +489,13 @@ class ConversationManager {
         if (this._autoWakeEnabled) {
             this._startWakeDetection();
         }
+    }
+
+    /**
+     * Get skill manager for external access
+     */
+    getSkillManager() {
+        return skillManager;
     }
 }
 

@@ -70,7 +70,7 @@
         <div class="boot-container">
             <div class="boot-header">
                 <h2 class="boot-title">ALICE INITIALIZATION</h2>
-                <p class="boot-subtitle">System Boot Sequence v0.2.0</p>
+                <p class="boot-subtitle">System Boot Sequence v0.3.0</p>
             </div>
             
             <div class="boot-progress">
@@ -149,6 +149,40 @@
                     </div>
                 </div>
                 
+                <!-- Skill Status Panel -->
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-icon">◈</span>
+                        <span class="hud-panel-title">Active Skill</span>
+                    </div>
+                    
+                    <div class="skill-status">
+                        <span class="skill-icon">◆</span>
+                        <span class="skill-name">Ready</span>
+                        <div class="skill-progress-bar">
+                            <div class="skill-progress"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="skills-list">
+                        <div class="skill-item" title="Calculator">
+                            <span class="skill-badge">∑</span>
+                        </div>
+                        <div class="skill-item" title="Web Search">
+                            <span class="skill-badge">🔍</span>
+                        </div>
+                        <div class="skill-item" title="Notes">
+                            <span class="skill-badge">📝</span>
+                        </div>
+                        <div class="skill-item" title="Reminders">
+                            <span class="skill-badge">⏰</span>
+                        </div>
+                        <div class="skill-item" title="Memory">
+                            <span class="skill-badge">🧠</span>
+                        </div>
+                    </div>
+                </div>
+                
                 <!-- Voice Controls Panel -->
                 <div class="hud-panel">
                     <div class="hud-panel-header">
@@ -188,8 +222,8 @@
                     <div class="quick-actions">
                         <button class="quick-action" type="button">Help</button>
                         <button class="quick-action" type="button">Settings</button>
-                        <button class="quick-action" type="button">Commands</button>
-                        <button class="quick-action" type="button">Logs</button>
+                        <button class="quick-action" type="button">Skills</button>
+                        <button class="quick-action" type="button">Memory</button>
                     </div>
                 </div>
             </div>
@@ -242,14 +276,18 @@
                     
                     <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">
                         <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Version:</span> 0.2.0 BETA
+                            <span style="color: var(--text-secondary);">Version:</span> 0.3.0 GAMMA
                         </div>
                         <div style="margin-bottom: 8px;">
                             <span style="color: var(--text-secondary);">Build:</span> 2026.08.30
                         </div>
                         <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Voice:</span> 
-                            <span style="color: var(--accent);">Active</span>
+                            <span style="color: var(--text-secondary);">Skills:</span> 
+                            <span style="color: var(--accent);">8 Active</span>
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <span style="color: var(--text-secondary);">Memory:</span> 
+                            <span style="color: var(--accent);">Enabled</span>
                         </div>
                         <div>
                             <span style="color: var(--text-secondary);">Status:</span> 
@@ -274,10 +312,13 @@
             <div class="debug-label">Simulate States</div>
             <div class="debug-buttons">
                 <button class="debug-btn active" data-state="IDLE">IDLE</button>
-                <button class="debug-btn" data-state="LISTENING">LISTENING</button>
-                <button class="debug-btn" data-state="PROCESSING">PROCESSING</button>
-                <button class="debug-btn" data-state="SPEAKING">SPEAKING</button>
-                <button class="debug-btn" data-state="EXECUTING">EXECUTING</button>
+                <button class="debug-btn" data-state="LISTENING">LISTEN</button>
+                <button class="debug-btn" data-state="PROCESSING">PROC</button>
+                <button class="debug-btn" data-state="SPEAKING">SPEAK</button>
+                <button class="debug-btn" data-state="UNDERSTANDING">UND</button>
+                <button class="debug-btn" data-state="SELECTING_TOOL">TOOL</button>
+                <button class="debug-btn" data-state="EXECUTING">EXEC</button>
+                <button class="debug-btn" data-state="COMPLETING">DONE</button>
             </div>
         </div>
         

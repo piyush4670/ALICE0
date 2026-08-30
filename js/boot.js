@@ -14,9 +14,11 @@ class BootSequence {
             { id: 'audio', name: 'Audio System', status: 'pending', icon: '◇' },
             { id: 'voice', name: 'Voice Recognition', status: 'pending', icon: '◉' },
             { id: 'tts', name: 'Speech Synthesis', status: 'pending', icon: '◎' },
-            { id: 'intelligence', name: 'Intelligence Engine', status: 'pending', icon: '◐' },
-            { id: 'security', name: 'Security Protocols', status: 'pending', icon: '⬡' },
-            { id: 'network', name: 'Network Interface', status: 'pending', icon: '◑' }
+            { id: 'memory', name: 'Memory System', status: 'pending', icon: '◐' },
+            { id: 'skills', name: 'Skill Engine', status: 'pending', icon: '⬡' },
+            { id: 'intelligence', name: 'Intelligence Engine', status: 'pending', icon: '◑' },
+            { id: 'security', name: 'Security Protocols', status: 'pending', icon: '◔' },
+            { id: 'network', name: 'Network Interface', status: 'pending', icon: '◕' }
         ];
         this._currentIndex = 0;
         this._isRunning = false;

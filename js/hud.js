@@ -1,7 +1,7 @@
 /**
  * ALICE HUD Module
  * Main Heads-Up Display for the AI interface
- * Part 2: Integrated with voice system
+ * Part 3: Integrated with skills and memory
  */
 import { CONFIG } from './config.js';
 import { state } from './state.js';
@@ -23,6 +23,7 @@ class ALICEHUD {
         this._setupWaveform();
         this._setupStateSubscription();
         this._setupVoiceUI();
+        this._setupSkillUI();
         this._startRenderLoop();
         
         // Update time and date
@@ -41,6 +42,11 @@ class ALICEHUD {
         
         state.subscribe('voice.lastAliceResponse', (text) => {
             this._updateResponseDisplay(text);
+        });
+
+        // Subscribe to skill state changes
+        state.subscribe('skill', (skillState) => {
+            this._updateSkillDisplay(skillState);
         });
         
         state.logActivity('HUD initialized and ready', 'success');
@@ -128,7 +134,10 @@ class ALICEHUD {
             LISTENING: 0.8,
             PROCESSING: 0.5,
             SPEAKING: 1.0,
-            EXECUTING: 0.7
+            EXECUTING: 0.7,
+            UNDERSTANDING: 0.5,
+            SELECTING_TOOL: 0.6,
+            COMPLETING: 0.4
         }[aliceState] || 0.15;
 
         // Shift data and add new values
@@ -141,7 +150,6 @@ class ALICEHUD {
         // Use actual audio data if available and listening
         if (audioManager.isCapturing() && (aliceState === 'LISTENING' || aliceState === 'SPEAKING')) {
             const audioLevel = audioManager.getAudioLevel();
-            const frequencyData = audioManager.getFrequencyData();
             
             // Calculate level from actual audio
             const actualLevel = audioLevel * intensity * 2;
@@ -174,7 +182,10 @@ class ALICEHUD {
             LISTENING: CONFIG.visuals.primaryColor,
             PROCESSING: CONFIG.visuals.warningColor,
             SPEAKING: CONFIG.visuals.accentColor,
-            EXECUTING: CONFIG.visuals.secondaryColor
+            EXECUTING: CONFIG.visuals.secondaryColor,
+            UNDERSTANDING: CONFIG.visuals.warningColor,
+            SELECTING_TOOL: CONFIG.visuals.secondaryColor,
+            COMPLETING: CONFIG.visuals.accentColor
         };
         
         ctx.fillStyle = colors[aliceState] || CONFIG.visuals.primaryColor;
@@ -213,6 +224,14 @@ class ALICEHUD {
         });
     }
 
+    _setupSkillUI() {
+        // Skill panel elements
+        const skillPanel = this._hudElement?.querySelector('.skill-status');
+        if (skillPanel) {
+            this._skillPanel = skillPanel;
+        }
+    }
+
     _updateVoiceStatus(voiceState) {
         const voiceStatus = this._hudElement?.querySelector('.voice-status');
         if (!voiceStatus) return;
@@ -243,6 +262,43 @@ class ALICEHUD {
             voiceStatus.className = 'voice-status inactive';
             micIcon?.classList.remove('active');
         }
+    }
+
+    _updateSkillDisplay(skillState) {
+        const skillStatus = this._hudElement?.querySelector('.skill-status');
+        if (!skillStatus) return;
+
+        const skillIcon = skillStatus.querySelector('.skill-icon');
+        const skillName = skillStatus.querySelector('.skill-name');
+        const skillProgress = skillStatus.querySelector('.skill-progress');
+        
+        const currentSkill = skillState.currentSkill;
+        
+        if (currentSkill) {
+            skillIcon.textContent = this._getSkillIcon(currentSkill);
+            skillName.textContent = currentSkill.charAt(0).toUpperCase() + currentSkill.slice(1);
+            skillStatus.className = 'skill-status active';
+            skillProgress.style.width = '100%';
+        } else {
+            skillIcon.textContent = '◆';
+            skillName.textContent = 'Ready';
+            skillStatus.className = 'skill-status';
+            skillProgress.style.width = '0%';
+        }
+    }
+
+    _getSkillIcon(skillName) {
+        const icons = {
+            calculator: '∑',
+            websearch: '🔍',
+            notes: '📝',
+            reminders: '⏰',
+            datetime: '🕐',
+            files: '📁',
+            reader: '📖',
+            memory: '🧠'
+        };
+        return icons[skillName] || '◈';
     }
 
     _transitionState(from, to) {
@@ -276,6 +332,11 @@ class ALICEHUD {
         // Update voice status
         this._updateVoiceStatus(state.getVoiceState());
 
+        // Update skill display if transitioning to/from skill states
+        if (to === 'UNDERSTANDING' || to === 'SELECTING_TOOL' || to === 'EXECUTING' || to === 'COMPLETING') {
+            this._updateSkillDisplay(state.getSkillState());
+        }
+
         state.logActivity(`State changed: ${from} → ${to}`, 'info');
     }
 
@@ -285,7 +346,10 @@ class ALICEHUD {
             LISTENING: 'Listening',
             PROCESSING: 'Processing',
             SPEAKING: 'Speaking',
-            EXECUTING: 'Executing'
+            EXECUTING: 'Executing',
+            UNDERSTANDING: 'Understanding',
+            SELECTING_TOOL: 'Selecting Tool',
+            COMPLETING: 'Completing'
         };
         return labels[state] || state;
     }

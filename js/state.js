@@ -36,7 +36,15 @@ class StateManager {
                 currentTranscript: '',
                 lastAliceResponse: ''
             },
-            conversation: []
+            // Skill-related state (Part 3)
+            skill: {
+                currentSkill: null,
+                lastSkill: null,
+                executionHistory: [],
+                pendingConfirmation: null
+            },
+            conversation: [],
+            lastReadDocument: null
         };
         
         this._listeners = new Map();
@@ -131,9 +139,11 @@ class StateManager {
             const aliceState = this._state.aliceState;
             let baseCpu = 15;
             
-            if (aliceState === CONFIG.states.PROCESSING) baseCpu = 40;
-            else if (aliceState === CONFIG.states.SPEAKING) baseCpu = 25;
-            else if (aliceState === CONFIG.states.LISTENING) baseCpu = 30;
+            if (aliceState === 'PROCESSING' || aliceState === 'UNDERSTANDING') baseCpu = 35;
+            else if (aliceState === 'SELECTING_TOOL') baseCpu = 25;
+            else if (aliceState === 'EXECUTING') baseCpu = 50;
+            else if (aliceState === 'SPEAKING') baseCpu = 25;
+            else if (aliceState === 'LISTENING') baseCpu = 30;
             
             this._state.systemMetrics = {
                 cpu: baseCpu + Math.random() * 20,
@@ -192,6 +202,33 @@ class StateManager {
 
     getConversation() {
         return [...this._state.conversation];
+    }
+
+    // Skill state methods
+    setSkillState(skillName, result) {
+        this._state.skill.currentSkill = skillName;
+        this._state.skill.lastSkill = skillName;
+        this._state.skill.executionHistory.push({
+            skill: skillName,
+            result: result,
+            timestamp: Date.now()
+        });
+        
+        // Keep only last 10 executions
+        if (this._state.skill.executionHistory.length > 10) {
+            this._state.skill.executionHistory.shift();
+        }
+        
+        this._notify('skill', this._state.skill);
+    }
+
+    getSkillState() {
+        return { ...this._state.skill };
+    }
+
+    clearSkillState() {
+        this._state.skill.currentSkill = null;
+        this._notify('skill', this._state.skill);
     }
 }
 

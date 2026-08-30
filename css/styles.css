@@ -1370,6 +1370,124 @@ body {
     }
 }
 
+/* Skill Status */
+.skill-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    margin-bottom: var(--space-md);
+    transition: all var(--transition-normal);
+}
+
+.skill-status.active {
+    border-color: var(--secondary);
+    background: rgba(255, 0, 170, 0.1);
+}
+
+.skill-icon {
+    font-size: 1.25rem;
+    width: 28px;
+    text-align: center;
+}
+
+.skill-name {
+    flex: 1;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.skill-progress-bar {
+    width: 60px;
+    height: 4px;
+    background: var(--bg-dark);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.skill-progress {
+    height: 100%;
+    width: 0%;
+    background: var(--secondary);
+    transition: width var(--transition-normal);
+}
+
+.skill-status.active .skill-progress {
+    width: 100%;
+    animation: skill-progress 1s ease-in-out infinite;
+}
+
+@keyframes skill-progress {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+}
+
+/* Skills List */
+.skills-list {
+    display: flex;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+}
+
+.skill-item {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    transition: all var(--transition-fast);
+}
+
+.skill-item:hover {
+    border-color: var(--primary);
+    background: rgba(0, 240, 255, 0.1);
+}
+
+.skill-badge {
+    font-size: 0.875rem;
+}
+
+/* State-specific badge colors */
+.hud-status-badge.understanding { border-color: var(--warning); color: var(--warning); }
+.hud-status-badge.selecting_tool { border-color: var(--secondary); color: var(--secondary); }
+.hud-status-badge.completing { border-color: var(--accent); color: var(--accent); }
+
+/* Orb skill states */
+.alice-orb.understanding .orb-core {
+    background: radial-gradient(circle at 40% 40%,
+        var(--warning) 0%,
+        rgba(255, 170, 0, 0.5) 50%,
+        rgba(255, 170, 0, 0.2) 100%);
+    animation: core-pulse 0.5s ease-in-out infinite;
+}
+
+.alice-orb.selecting_tool .orb-core {
+    background: radial-gradient(circle at 40% 40%,
+        var(--secondary) 0%,
+        rgba(255, 0, 170, 0.5) 50%,
+        rgba(255, 0, 170, 0.2) 100%);
+    animation: core-spin 1s linear infinite;
+}
+
+.alice-orb.completing .orb-core {
+    background: radial-gradient(circle at 40% 40%,
+        var(--accent) 0%,
+        rgba(0, 255, 136, 0.5) 50%,
+        rgba(0, 255, 136, 0.2) 100%);
+    animation: core-pulse 0.3s ease-in-out infinite;
+}
+
+.state-indicator.understanding .state-text { color: var(--warning); }
+.state-indicator.selecting_tool .state-text { color: var(--secondary); }
+.state-indicator.completing .state-text { color: var(--accent); }
+
 /* ========================================
    UTILITY CLASSES
    ======================================== */
