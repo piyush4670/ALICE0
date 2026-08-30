@@ -1,7 +1,7 @@
 /**
  * ALICE Configuration
  * Central configuration for the ALICE interface
- * Part 4: Agentic Intelligence (Task Planner + Execution Loop)
+ * Part 5: Advanced Capabilities & Final Integration
  */
 export const CONFIG = {
     // Authentication (placeholder - replace with real auth in Part 4)
@@ -78,6 +78,47 @@ export const CONFIG = {
         requireConfirmation: true
     },
 
+    // Proactive assistance (Part 5)
+    proactive: {
+        enabled: true,
+        checkInterval: 30000, // ms between proactive suggestion checks
+        // 'off' | 'low' | 'moderate' | 'high'
+        level: 'moderate',
+        maxSuggestionsPerSession: 20
+    },
+
+    // Settings (Part 5)
+    settings: {
+        storageKey: 'alice_settings',
+        defaults: {
+            proactive: { enabled: true, level: 'moderate' },
+            features: { vision: true, browser: true, iot: true, dev: true },
+            skills: {} // populated at runtime (all enabled by default)
+        }
+    },
+
+    // IoT / External integrations (Part 5)
+    integrations: {
+        // Mock providers are bundled so the layer is demonstrable and testable
+        // without any real hardware. Real adapters register the same interface.
+        providers: ['mock'],
+        defaultProvider: 'mock'
+    },
+
+    // Security (Part 5)
+    security: {
+        // Sensitive tokens redacted from all logs
+        redactPatterns: [
+            /\b(sk|pk|rk)-[A-Za-z0-9]{8,}\b/g,   // common API key formats
+            /\b[0-9a-f]{32,}\b/g,                 // long hex tokens
+            /Bearer\s+[A-Za-z0-9._-]+/gi,
+            /api[_-]?key[=:\s]+[A-Za-z0-9._-]+/gi,
+            /password[=:\s]+[^\s,;]+/gi,
+            /token[=:\s]+[A-Za-z0-9._-]+/gi,
+            /secret[=:\s]+[A-Za-z0-9._-]+/gi
+        ]
+    },
+
     // Visual configuration
     visuals: {
         primaryColor: '#00f0ff', // Cyan
@@ -92,8 +133,8 @@ export const CONFIG = {
 
     // System info
     system: {
-        version: '0.4.0',
-        codename: 'DELTA',
+        version: '0.5.0',
+        codename: 'EPSILON',
         buildDate: '2026-08-30'
     },
 
@@ -116,3 +157,7 @@ Object.freeze(CONFIG.voice);
 Object.freeze(CONFIG.skills);
 Object.freeze(CONFIG.agent);
 Object.freeze(CONFIG.permissions);
+Object.freeze(CONFIG.proactive);
+Object.freeze(CONFIG.settings);
+Object.freeze(CONFIG.integrations);
+Object.freeze(CONFIG.security);

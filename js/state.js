@@ -3,6 +3,7 @@
  * Central state management for the interface
  */
 import { CONFIG } from './config.js';
+import { redact } from './utils.js';
 
 class StateManager {
     constructor() {
@@ -57,7 +58,18 @@ class StateManager {
                 updatedAt: null
             },
             conversation: [],
-            lastReadDocument: null
+            lastReadDocument: null,
+            // Part 5
+            notifications: [],
+            settings: {
+                proactive: { enabled: true, level: 'moderate' },
+                features: { vision: true, browser: true, iot: true, dev: true },
+                skills: {}
+            },
+            proactive: {
+                lastCheck: 0,
+                suggested: []
+            }
         };
         
         this._listeners = new Map();
@@ -122,11 +134,11 @@ class StateManager {
         }
     }
 
-    // Activity logging
+    // Activity logging (sensitive tokens are redacted before storage)
     logActivity(message, type = 'info') {
         const entry = {
             timestamp: new Date(),
-            message,
+            message: redact(message),
             type
         };
         this._state.activityLog.unshift(entry);
@@ -278,6 +290,59 @@ class StateManager {
         Object.assign(this._state.task.plan[stepIndex], patch);
         this._state.task.updatedAt = Date.now();
         this._notify('task', this.getTask());
+    }
+
+    // ============ NOTIFICATIONS (Part 5) ============
+
+    notify(message, type = 'info', { duration = 5000 } = {}) {
+        const n = { id: Date.now() + Math.random(), message: redact(message), type, duration };
+        this._state.notifications.unshift(n);
+        if (this._state.notifications.length > 8) this._state.notifications.pop();
+        this._notify('notifications', [...this._state.notifications]);
+        return n.id;
+    }
+
+    dismissNotification(id) {
+        this._state.notifications = this._state.notifications.filter(n => n.id !== id);
+        this._notify('notifications', [...this._state.notifications]);
+    }
+
+    getNotifications() {
+        return [...this._state.notifications];
+    }
+
+    // ============ SETTINGS (Part 5) ============
+
+    getSettings() {
+        return JSON.parse(JSON.stringify(this._state.settings));
+    }
+
+    setSettings(patch) {
+        Object.assign(this._state.settings, patch);
+        this._notify('settings', this.getSettings());
+    }
+
+    updateSetting(group, key, value) {
+        if (!this._state.settings[group]) this._state.settings[group] = {};
+        this._state.settings[group][key] = value;
+        this._notify('settings', this.getSettings());
+    }
+
+    // ============ MEMORY (Part 5 UI) ============
+
+    notifyMemoryChanged() {
+        this._notify('memory', Date.now());
+    }
+
+    // ============ PROACTIVE (Part 5) ============
+
+    recordSuggestion(text) {
+        this._state.proactive.suggested.push({ text, at: Date.now() });
+        this._state.proactive.lastCheck = Date.now();
+        if (this._state.proactive.suggested.length > 50) {
+            this._state.proactive.suggested.shift();
+        }
+        this._notify('proactive', { ...this._state.proactive });
     }
 }
 

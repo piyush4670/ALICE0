@@ -32,8 +32,11 @@ const files = [
     '../js/skillManager.js', '../js/skills/calculator.js', '../js/skills/websearch.js',
     '../js/skills/notes.js', '../js/skills/reminders.js', '../js/skills/datetime.js',
     '../js/skills/files.js', '../js/skills/reader.js', '../js/skills/memory.js',
+    '../js/skills/vision.js', '../js/skills/browser.js', '../js/skills/dev.js', '../js/skills/iot.js',
     '../js/taskPlanner.js', '../js/permissions.js', '../js/agent.js',
-    '../js/taskDashboard.js', '../js/conversation.js', '../js/hud.js',
+    '../js/taskDashboard.js', '../js/settings.js', '../js/notifications.js',
+    '../js/proactive.js', '../js/integrations.js',
+    '../js/conversation.js', '../js/hud.js',
     '../js/auth.js', '../js/boot.js', '../js/app.js'
 ];
 

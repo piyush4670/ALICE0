@@ -11,6 +11,10 @@ class MemorySystem {
         this._longTerm = new Map(); // User-controlled memories
         this._notes = []; // Saved notes
         this._reminders = []; // Tasks/reminders
+        this._preferences = {}; // User preferences (Part 5)
+        this._projectContext = {}; // Per-project context (Part 5)
+        this._pinnedFacts = []; // Important pinned facts (Part 5)
+        this._taskHistory = []; // Completed task history (Part 5)
         this._maxShortTerm = 20;
         this._storageKey = 'alice_memory';
         
@@ -29,6 +33,10 @@ class MemorySystem {
                 this._longTerm = new Map(data.longTerm || []);
                 this._notes = data.notes || [];
                 this._reminders = data.reminders || [];
+                this._preferences = data.preferences || {};
+                this._projectContext = data.projectContext || {};
+                this._pinnedFacts = data.pinnedFacts || [];
+                this._taskHistory = data.taskHistory || [];
                 
                 // Clean up old reminders
                 this._cleanReminders();
@@ -46,9 +54,14 @@ class MemorySystem {
             const data = {
                 longTerm: Array.from(this._longTerm.entries()),
                 notes: this._notes,
-                reminders: this._reminders
+                reminders: this._reminders,
+                preferences: this._preferences,
+                projectContext: this._projectContext,
+                pinnedFacts: this._pinnedFacts,
+                taskHistory: this._taskHistory
             };
             localStorage.setItem(this._storageKey, JSON.stringify(data));
+            state.notifyMemoryChanged();
         } catch (e) {
             console.warn('Failed to save memory:', e);
         }
@@ -146,20 +159,160 @@ class MemorySystem {
     }
 
     /**
-     * Search memories by keyword
+     * Search memories by keyword (scored retrieval — Part 5).
+     * Exact key matches and keyword overlap rank highest. When nothing
+     * matches literally, a character-bigram similarity fallback catches
+     * small spelling variations (e.g. "favourite colour" → "favorite color").
      */
     search(keyword) {
-        const results = [];
-        const lowerKeyword = keyword.toLowerCase();
+        const lowerKeyword = String(keyword || '').toLowerCase().trim();
+        const terms = lowerKeyword.split(/\s+/).filter(Boolean);
 
+        const scored = [];
         for (const [key, data] of this._longTerm.entries()) {
-            if (key.includes(lowerKeyword) || 
-                String(data.value).toLowerCase().includes(lowerKeyword)) {
-                results.push({ key, ...data });
+            const keyLower = key.toLowerCase();
+            const valueLower = String(data.value).toLowerCase();
+            let score = 0;
+
+            if (keyLower === lowerKeyword) score += 100;
+            else if (keyLower.includes(lowerKeyword)) score += 60;
+            else if (valueLower.includes(lowerKeyword)) score += 40;
+
+            for (const term of terms) {
+                if (keyLower.includes(term)) score += 5;
+                if (valueLower.includes(term)) score += 3;
             }
+
+            // Spelling-variation fallback (bigram similarity)
+            if (score === 0) {
+                const sim = Math.max(
+                    this._bigramSimilarity(lowerKeyword, keyLower),
+                    this._bigramSimilarity(lowerKeyword, valueLower)
+                );
+                if (sim > 0.45) score += Math.round(sim * 30);
+            }
+
+            if (score > 0) scored.push({ key, ...data, score });
         }
 
-        return results;
+        return scored.sort((a, b) => b.score - a.score);
+    }
+
+    /**
+     * Dice coefficient over character bigrams — a light, dependency-free
+     * similarity measure for fuzzy recall.
+     */
+    _bigramSimilarity(a, b) {
+        const as = this._bigrams(a);
+        const bs = this._bigrams(b);
+        if (!as.size || !bs.size) return 0;
+        let overlap = 0;
+        for (const g of as) if (bs.has(g)) overlap++;
+        return (2 * overlap) / (as.size + bs.size);
+    }
+
+    _bigrams(s) {
+        const set = new Set();
+        const str = s.replace(/[^a-z0-9]/g, '');
+        for (let i = 0; i < str.length - 1; i++) set.add(str.slice(i, i + 2));
+        return set;
+    }
+
+    /**
+     * Best-effort recall with fuzzy scoring (Part 5). Returns the closest
+     * memory (or null) even when the key is not an exact match.
+     */
+    recallFuzzy(keyword) {
+        const results = this.search(keyword);
+        return results.length ? results[0] : null;
+    }
+
+    // ============ PREFERENCES (Part 5) ============
+
+    setPreference(key, value) {
+        this._preferences[key.toLowerCase()] = value;
+        this._save();
+        state.logActivity(`Preference set: ${key}`, 'info');
+    }
+
+    getPreference(key) {
+        return this._preferences[key.toLowerCase()] ?? null;
+    }
+
+    getAllPreferences() {
+        return { ...this._preferences };
+    }
+
+    deletePreference(key) {
+        const deleted = delete this._preferences[key.toLowerCase()];
+        if (deleted) this._save();
+        return deleted;
+    }
+
+    // ============ PROJECT CONTEXT (Part 5) ============
+
+    setProjectContext(project, key, value) {
+        const p = project.toLowerCase();
+        if (!this._projectContext[p]) this._projectContext[p] = {};
+        this._projectContext[p][key.toLowerCase()] = value;
+        this._save();
+    }
+
+    getProjectContext(project) {
+        return this._projectContext[project.toLowerCase()] || {};
+    }
+
+    clearProjectContext(project) {
+        delete this._projectContext[project.toLowerCase()];
+        this._save();
+    }
+
+    // ============ PINNED FACTS (Part 5) ============
+
+    pinFact(text) {
+        const fact = { id: Date.now().toString(), text, pinned: Date.now() };
+        this._pinnedFacts.unshift(fact);
+        this._save();
+        return fact;
+    }
+
+    unpinFact(id) {
+        const idx = this._pinnedFacts.findIndex(f => f.id === id);
+        if (idx !== -1) {
+            this._pinnedFacts.splice(idx, 1);
+            this._save();
+            return true;
+        }
+        return false;
+    }
+
+    getPinnedFacts() {
+        return [...this._pinnedFacts];
+    }
+
+    // ============ TASK HISTORY (Part 5) ============
+
+    recordTask(goal, status, summary = '') {
+        const entry = {
+            id: Date.now().toString(),
+            goal,
+            status,
+            summary,
+            at: Date.now()
+        };
+        this._taskHistory.unshift(entry);
+        if (this._taskHistory.length > 50) this._taskHistory.pop();
+        this._save();
+        return entry;
+    }
+
+    getTaskHistory(limit = 20) {
+        return this._taskHistory.slice(0, limit);
+    }
+
+    clearTaskHistory() {
+        this._taskHistory = [];
+        this._save();
     }
 
     /**
@@ -174,12 +327,16 @@ class MemorySystem {
     }
 
     /**
-     * Clear all long-term memory
+     * Clear all long-term memory (and Part 5 memory stores)
      */
     clearAllMemory() {
         this._longTerm.clear();
         this._notes = [];
         this._reminders = [];
+        this._preferences = {};
+        this._projectContext = {};
+        this._pinnedFacts = [];
+        this._taskHistory = [];
         this._save();
         state.logActivity('All memory cleared', 'warning');
     }

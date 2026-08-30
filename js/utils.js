@@ -123,6 +123,21 @@ export function createSVG(tag, attributes = {}) {
 }
 
 /**
+ * Redact sensitive-looking tokens from a string before it is logged or
+ * displayed. Uses the patterns defined in CONFIG.security. This keeps API
+ * keys and credentials out of logs while preserving the rest of the message.
+ */
+import { CONFIG } from './config.js';
+
+export function redact(text) {
+    let out = String(text ?? '');
+    for (const pattern of CONFIG.security.redactPatterns) {
+        out = out.replace(pattern, '[REDACTED]');
+    }
+    return out;
+}
+
+/**
  * Escape a string for safe insertion into HTML (prevents markup injection
  * in dynamic HUD panels such as the task dashboard).
  */

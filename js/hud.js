@@ -6,9 +6,13 @@
 import { CONFIG } from './config.js';
 import { state } from './state.js';
 import { audioManager } from './audio.js';
-import { formatTime, formatDate } from './utils.js';
+import { formatTime, formatDate, escapeHtml } from './utils.js';
 import { taskDashboard } from './taskDashboard.js';
 import { permissions } from './permissions.js';
+import { notifications } from './notifications.js';
+import { settings } from './settings.js';
+import { skillManager } from './skillManager.js';
+import { memory } from './memory.js';
 
 class ALICEHUD {
     constructor() {
@@ -28,6 +32,10 @@ class ALICEHUD {
         this._setupSkillUI();
         this._setupTaskDashboard();
         this._setupConfirmationModal();
+        this._setupNotifications();
+        this._setupSettingsModal();
+        this._setupMemoryModal();
+        this._setupQuickActions();
         this._startRenderLoop();
         
         // Update time and date
@@ -247,6 +255,262 @@ class ALICEHUD {
         const modal = document.getElementById('confirmation-modal');
         if (modal) {
             permissions.attachModal(modal);
+        }
+    }
+
+    _setupNotifications() {
+        const center = document.getElementById('notification-center');
+        notifications.init(center);
+    }
+
+    // ------------------------------------------------------------------
+    // Settings modal (Part 5)
+    // ------------------------------------------------------------------
+    _setupSettingsModal() {
+        this._settingsModal = document.getElementById('settings-modal');
+        if (!this._settingsModal) return;
+
+        state.subscribe('settings', () => this._renderSettings());
+        this._renderSettings();
+
+        // Close buttons
+        this._settingsModal.querySelectorAll('[data-close="settings"]').forEach(b =>
+            b.addEventListener('click', () => this._closeSettings()));
+        this._settingsModal.addEventListener('click', (e) => {
+            if (e.target === this._settingsModal) this._closeSettings();
+        });
+    }
+
+    openSettings() {
+        if (this._settingsModal) {
+            this._settingsModal.classList.add('visible');
+            this._settingsModal.setAttribute('aria-hidden', 'false');
+        }
+    }
+
+    _closeSettings() {
+        if (this._settingsModal) {
+            this._settingsModal.classList.remove('visible');
+            this._settingsModal.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    _renderSettings() {
+        const body = this._settingsModal?.querySelector('#settings-body');
+        if (!body) return;
+
+        const s = state.getSettings();
+        const skills = skillManager.getSkills();
+
+        const pro = s.proactive;
+        const feats = s.features;
+
+        body.innerHTML = `
+            <section class="settings-group">
+                <h4 class="settings-group-title">Proactive Assistance</h4>
+                <label class="settings-row">
+                    <span>Enabled</span>
+                    <input type="checkbox" data-set="proactive" data-key="enabled" ${pro.enabled ? 'checked' : ''}>
+                </label>
+                <label class="settings-row">
+                    <span>Frequency</span>
+                    <select data-set="proactive" data-key="level">
+                        ${['off', 'low', 'moderate', 'high'].map(l =>
+                            `<option value="${l}" ${pro.level === l ? 'selected' : ''}>${l}</option>`).join('')}
+                    </select>
+                </label>
+            </section>
+
+            <section class="settings-group">
+                <h4 class="settings-group-title">Features</h4>
+                ${Object.keys(feats).map(f => `
+                    <label class="settings-row">
+                        <span>${f}</span>
+                        <input type="checkbox" data-set="features" data-key="${f}" ${feats[f] ? 'checked' : ''}>
+                    </label>`).join('')}
+            </section>
+
+            <section class="settings-group">
+                <h4 class="settings-group-title">Skills</h4>
+                ${skills.map(sk => `
+                    <label class="settings-row">
+                        <span>${escapeHtml(sk.name)}</span>
+                        <input type="checkbox" data-skill="${escapeHtml(sk.name)}" ${skillManager.isEnabled(sk.name) ? 'checked' : ''}>
+                    </label>`).join('')}
+            </section>
+
+            <div class="settings-footer">
+                <button class="confirm-btn approve" id="settings-reset" type="button">Reset to defaults</button>
+            </div>
+        `;
+
+        // Wire events
+        body.querySelectorAll('[data-set]').forEach(el => {
+            const apply = () => {
+                const group = el.dataset.set;
+                const key = el.dataset.key;
+                const value = el.type === 'checkbox' ? el.checked : el.value;
+                settings.set(group, key, value);
+            };
+            el.addEventListener('change', apply);
+        });
+
+        body.querySelectorAll('[data-skill]').forEach(el => {
+            el.addEventListener('change', () => {
+                settings.setSkillEnabled(el.dataset.skill, el.checked);
+            });
+        });
+
+        body.querySelector('#settings-reset')?.addEventListener('click', () => {
+            settings.resetAll();
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Memory management modal (Part 5)
+    // ------------------------------------------------------------------
+    _setupMemoryModal() {
+        this._memoryModal = document.getElementById('memory-modal');
+        if (!this._memoryModal) return;
+
+        state.subscribe('memory', () => this._renderMemory());
+        this._memoryModal.querySelectorAll('[data-close="memory"]').forEach(b =>
+            b.addEventListener('click', () => this._closeMemory()));
+        this._memoryModal.addEventListener('click', (e) => {
+            if (e.target === this._memoryModal) this._closeMemory();
+        });
+    }
+
+    openMemory() {
+        if (this._memoryModal) {
+            this._renderMemory();
+            this._memoryModal.classList.add('visible');
+            this._memoryModal.setAttribute('aria-hidden', 'false');
+        }
+    }
+
+    _closeMemory() {
+        if (this._memoryModal) {
+            this._memoryModal.classList.remove('visible');
+            this._memoryModal.setAttribute('aria-hidden', 'true');
+        }
+    }
+
+    _renderMemory() {
+        const body = this._memoryModal?.querySelector('#memory-body');
+        if (!body) return;
+
+        const memories = memory.getAllMemories();
+        const prefs = memory.getAllPreferences();
+        const facts = memory.getPinnedFacts();
+        const history = memory.getTaskHistory(10);
+
+        const memoryRows = memories.length
+            ? memories.map(m => `
+                <div class="memory-row" data-kind="memory" data-key="${escapeHtml(m.key)}">
+                    <div class="memory-row-text">
+                        <strong>${escapeHtml(m.key)}</strong> — ${escapeHtml(m.value)}
+                    </div>
+                    <button class="memory-row-delete" data-delete="memory" data-key="${escapeHtml(m.key)}" type="button">✕</button>
+                </div>`).join('')
+            : '<p class="memory-empty">No saved memories.</p>';
+
+        const prefRows = Object.keys(prefs).length
+            ? Object.entries(prefs).map(([k, v]) => `
+                <div class="memory-row">
+                    <div class="memory-row-text"><strong>pref:${escapeHtml(k)}</strong> — ${escapeHtml(v)}</div>
+                    <button class="memory-row-delete" data-delete="preference" data-key="${escapeHtml(k)}" type="button">✕</button>
+                </div>`).join('')
+            : '<p class="memory-empty">No preferences.</p>';
+
+        const factRows = facts.length
+            ? facts.map(f => `
+                <div class="memory-row">
+                    <div class="memory-row-text">${escapeHtml(f.text)}</div>
+                    <button class="memory-row-delete" data-delete="fact" data-key="${escapeHtml(f.id)}" type="button">✕</button>
+                </div>`).join('')
+            : '<p class="memory-empty">No pinned facts.</p>';
+
+        const historyRows = history.length
+            ? history.map(h => `
+                <div class="memory-row">
+                    <div class="memory-row-text">
+                        <span class="memory-tag ${h.status}">${escapeHtml(h.status)}</span> ${escapeHtml(h.goal)}
+                    </div>
+                </div>`).join('')
+            : '<p class="memory-empty">No task history.</p>';
+
+        body.innerHTML = `
+            <div class="memory-sections">
+                <section class="settings-group">
+                    <h4 class="settings-group-title">Memories</h4>
+                    ${memoryRows}
+                </section>
+                <section class="settings-group">
+                    <h4 class="settings-group-title">Preferences</h4>
+                    ${prefRows}
+                </section>
+                <section class="settings-group">
+                    <h4 class="settings-group-title">Pinned Facts</h4>
+                    ${factRows}
+                </section>
+                <section class="settings-group">
+                    <h4 class="settings-group-title">Task History</h4>
+                    ${historyRows}
+                </section>
+            </div>
+            <div class="settings-footer">
+                <button class="confirm-btn cancel" id="memory-clear-all" type="button">Clear all memory</button>
+            </div>
+        `;
+
+        body.querySelectorAll('[data-delete]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const kind = btn.dataset.delete;
+                const key = btn.dataset.key;
+                if (kind === 'memory') memory.forget(key);
+                else if (kind === 'preference') memory.deletePreference(key);
+                else if (kind === 'fact') memory.unpinFact(key);
+                this._renderMemory();
+            });
+        });
+
+        body.querySelector('#memory-clear-all')?.addEventListener('click', () => {
+            // Clear-all is irreversible → require confirmation via the shared modal
+            permissions.requestConfirmation({
+                title: 'Clear all memory',
+                message: 'This permanently deletes all memories, preferences, facts, notes, and task history.',
+                action: 'Clear all memory'
+            }).then(approved => {
+                if (approved) {
+                    memory.clearAllMemory();
+                    state.notify('All memory cleared', 'warning');
+                }
+                this._renderMemory();
+            });
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Quick actions
+    // ------------------------------------------------------------------
+    _setupQuickActions() {
+        const actions = {
+            help: () => conversationHelp(),
+            settings: () => this.openSettings(),
+            skills: () => this.openSettings(),
+            memory: () => this.openMemory()
+        };
+
+        this._hudElement?.querySelectorAll('[data-action]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const action = btn.dataset.action;
+                if (actions[action]) actions[action]();
+            });
+        });
+
+        function conversationHelp() {
+            state.notify('Say "help" or type a command below the core.', 'info', { duration: 8000 });
         }
     }
 

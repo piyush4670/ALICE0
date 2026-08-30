@@ -19,6 +19,9 @@ class BootSequence {
             { id: 'planner', name: 'Task Planner', status: 'pending', icon: '▣' },
             { id: 'agent', name: 'Agent Core', status: 'pending', icon: '◈' },
             { id: 'intelligence', name: 'Intelligence Engine', status: 'pending', icon: '◑' },
+            { id: 'vision', name: 'Vision System', status: 'pending', icon: '◉' },
+            { id: 'integrations', name: 'Integrations Layer', status: 'pending', icon: '⬢' },
+            { id: 'proactive', name: 'Proactive Engine', status: 'pending', icon: '◬' },
             { id: 'security', name: 'Security Protocols', status: 'pending', icon: '◔' },
             { id: 'network', name: 'Network Interface', status: 'pending', icon: '◕' }
         ];

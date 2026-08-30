@@ -1,8 +1,8 @@
 # ALICE - Advanced Intelligence & Learning Interactive Companion Engine
 
-A futuristic browser-based AI assistant interface with voice interaction, memory, modular skills, and multi-step agentic task planning.
+A futuristic browser-based AI assistant interface with voice interaction, memory, modular skills, multi-step agentic task planning, and advanced capabilities (vision, browser/dev assistance, IoT layer, proactive help).
 
-![ALICE Interface](https://img.shields.io/badge/Version-0.4.0--delta-blue)
+![ALICE Interface](https://img.shields.io/badge/Version-0.5.0--epsilon-blue)
 ![Status](https://img.shields.io/badge/Status-Development-yellow)
 
 ## 🎯 Project Overview
@@ -13,7 +13,7 @@ ALICE is a 5-part development project:
 - **Part 2** (Complete): Voice Recognition + Natural Speech ✅
 - **Part 3** (Complete): Memory, Tools & Skills ✅
 - **Part 4** (Complete): Agentic Intelligence — Task Planner, Execution Loop, Permissions ✅
-- **Part 5**: Advanced Integrations
+- **Part 5** (Complete): Advanced Capabilities & Final Integration ✅
 
 ## 🚀 Features
 
@@ -45,6 +45,17 @@ ALICE is a 5-part development project:
 - **Task Dashboard**: Live panel showing the goal, per-step progress, current action, and final status
 - **Responsive execution**: Steps run asynchronously so the UI never freezes during longer tasks
 
+### Part 5 - Advanced Capabilities (NEW)
+- **Vision**: local image/screenshot analysis (dimensions, dominant colour, brightness) via Canvas — no external service
+- **Browser Assistance**: open websites (confirmation-gated), read current-page visible text, search the page
+- **Developer Mode**: explain code, find common bugs, suggest fixes, scaffold projects, analyze logs, simulated (safe) commands
+- **Advanced Memory**: preferences, project context, pinned facts, task history, fuzzy scored retrieval, full view/edit/delete UI
+- **Proactive Assistance**: configurable suggestions (reminders, pending tasks, follow-ups) with frequency levels
+- **IoT / Integrations Layer**: provider-agnostic device registry with bundled virtual (mock) devices; no vendor lock-in
+- **Skill/Plugin Ecosystem**: skills are validated plugins (name, description, permissions, risk, inputs, actions, error handling); individually enable/disable-able; auto-discovered by the agent
+- **Advanced Security**: log redaction, deny-by-default sensitive actions, per-skill toggles, no unrestricted system access
+- **Polish**: notification toasts, settings panel, memory management UI, responsive design
+
 ## 📁 Project Structure
 
 ```
@@ -61,16 +72,20 @@ ALICE0/
 │   ├── hud.js              # HUD controller
 │   ├── memory.js           # Memory system
 │   ├── skillManager.js     # Skill routing
-│   ├── taskPlanner.js      # Task planner (NEW — Part 4)
-│   ├── agent.js            # Agent execution loop (NEW — Part 4)
-│   ├── permissions.js      # Confirmation/permission system (NEW — Part 4)
-│   ├── taskDashboard.js    # Task dashboard renderer (NEW — Part 4)
+│   ├── taskPlanner.js      # Task planner (Part 4)
+│   ├── agent.js            # Agent execution loop (Part 4)
+│   ├── permissions.js      # Confirmation/permission system (Part 4)
+│   ├── taskDashboard.js    # Task dashboard renderer (Part 4)
+│   ├── settings.js         # Settings manager (NEW — Part 5)
+│   ├── notifications.js    # Notification toasts (NEW — Part 5)
+│   ├── proactive.js        # Proactive suggestions (NEW — Part 5)
+│   ├── integrations.js     # Device/API integration layer (NEW — Part 5)
 │   ├── audio.js            # Audio manager
 │   ├── wakeword.js         # Wake word detection
 │   ├── stt.js              # Speech-to-text
 │   ├── tts.js              # Text-to-speech
 │   ├── conversation.js     # Conversation flow + agent routing
-│   ├── utils.js            # Utilities (incl. summarizeText)
+│   ├── utils.js            # Utilities (summarizeText, redact, escapeHtml)
 │   └── skills/
 │       ├── calculator.js   # Calculator skill
 │       ├── websearch.js    # Web search (DuckDuckGo API)
@@ -79,23 +94,52 @@ ALICE0/
 │       ├── datetime.js     # Date/time queries
 │       ├── files.js        # File operations
 │       ├── reader.js       # Document reading
-│       └── memory.js       # User memory
+│       ├── memory.js       # User memory
+│       ├── vision.js       # Image/screen understanding (NEW — Part 5)
+│       ├── browser.js      # Browser assistance (NEW — Part 5)
+│       ├── dev.js          # Developer mode (NEW — Part 5)
+│       └── iot.js          # IoT device control (NEW — Part 5)
 ├── tests/
-│   ├── agent.test.mjs      # Planner/agent/permissions smoke tests (node)
-│   └── load.test.mjs       # Verifies all 26 modules import cleanly
+│   ├── agent.test.mjs      # Planner/agent/permissions (Part 4)
+│   ├── part5.test.mjs      # Part 5 feature tests
+│   └── load.test.mjs       # Verifies all modules import cleanly
 └── README.md
 ```
 
 ## 🛠️ Technologies
 
-- **Vanilla JavaScript** (ES6 Modules)
-- **CSS3** (Custom Properties, Animations)
+- **Vanilla JavaScript** (ES6 Modules) — zero build step, zero runtime dependencies
+- **CSS3** (Custom Properties, Animations, Grid/Flexbox, Responsive breakpoints)
 - **Google Fonts** (Orbitron, Rajdhani, Share Tech Mono)
-- **HTML5 Canvas** (Waveform visualization)
-- **Web Speech API** (Voice interaction)
-- **Web Audio API** (Audio analysis)
-- **localStorage** (Memory persistence)
-- **DuckDuckGo API** (Free web search)
+- **HTML5 Canvas** (waveform visualization + local image analysis)
+- **Web Speech API** (speech recognition + synthesis)
+- **Web Audio API** (audio capture/analysis)
+- **Screen Capture API** (screenshots, permission-gated)
+- **localStorage** (memory, notes, reminders, settings persistence)
+- **DuckDuckGo Instant Answer API** (free web search, no key)
+- **Node.js** (headless test harness only)
+
+## ⚙️ Configuration / Environment Variables
+
+ALICE is fully client-side and requires **no environment variables** and **no
+API keys** to run. All configuration lives in `js/config.js` (`CONFIG`) and is
+frozen at runtime:
+
+| Setting | Where | Purpose |
+|---------|-------|---------|
+| Default PIN (`1234`) | `CONFIG.auth.defaultPin` (prototype) | Auth gate — see SECURITY.md |
+| Risk levels | `CONFIG.skills.riskLevels` | Safe vs. sensitive classification |
+| Agent retries / pacing | `CONFIG.agent` | Execution loop tuning |
+| Proactive frequency | `CONFIG.proactive` | Suggestion interval + level |
+| Settings defaults | `CONFIG.settings.defaults` | Persisted user settings |
+| Log redaction | `CONFIG.security.redactPatterns` | Strips secrets from logs |
+
+Runtime user settings (proactive level, feature toggles, per-skill enable/disable)
+are persisted in `localStorage` under `alice_settings`; memory/notes/reminders
+under `alice_memory`.
+
+> ⚠️ If you later add an LLM, search, or IoT provider that needs a key, keep it
+> **server-side** (or in a local proxy) and never commit it — see SECURITY.md.
 
 ## 🎤 Voice Commands
 
@@ -139,6 +183,14 @@ ALICE0/
 - "Delete my note" (ALICE asks you to approve/cancel before acting)
 - Say "approve" or "cancel" — or use the buttons in the dialog
 
+### Advanced (Part 5)
+- "Analyze this image" / "Take a screenshot" (vision)
+- "Open the website example.com" (browser — asks for confirmation)
+- "Explain this code" / "Find bugs" (developer mode, after reading a code file)
+- "List my devices" / "Turn on the desk lamp" (IoT — mock devices, confirmation-gated)
+- Open **Settings** (top-left quick actions) to toggle skills, features, and proactive level
+- Open **Memory** to view/edit/delete memories, preferences, facts, and task history
+
 ## 🖥️ Running the Application
 
 ```bash
@@ -156,8 +208,9 @@ python -m http.server 8080
 ### Running the tests (Node)
 
 ```bash
-node tests/agent.test.mjs   # planner, agent loop, failure recovery, permissions
-node tests/load.test.mjs    # verifies all modules import without errors
+node tests/agent.test.mjs   # planner, agent loop, failure recovery, permissions (32 checks)
+node tests/part5.test.mjs   # Part 5: plugins, memory, settings, IoT, dev, security (34 checks)
+node tests/load.test.mjs    # verifies all 34 modules import without errors
 ```
 
 ## 🧠 How the Agent Works (Part 4)
@@ -200,26 +253,49 @@ unrestricted autonomy — nothing sensitive runs without an explicit yes.
 | Files | File read/write | "Create a file" |
 | Reader | Document parsing | "Read this document" |
 | Memory | User memories | "Remember my name is..." |
+| Vision | Image/screen analysis | "Analyze this image" |
+| Browser | Open/read sites | "Open the website ..." |
+| Developer | Code help, bug finding | "Find bugs" |
+| IoT | Device control | "Turn on the desk lamp" |
 
-## 🔮 Future Development
+## 🔮 Recommended Future Improvements
 
-### Part 5
-- Calendar integration, Weather API, Smart home control
-- Self-improvement
-- Multi-modal interactions
-- Expanding the recipe library and alternative-tool fallbacks
+- Upgrade vision from local colour/brightness heuristics to real OCR/object
+  recognition (e.g. Tesseract.js or a self-hosted model) behind the same skill
+- Add a browser companion extension to unlock true multi-tab automation while
+  keeping the confirmation/permission layer
+- Replace the simulated dev command runner with a gated, sandboxed execution
+  backend (e.g. a local WASM shell or an opt-in local agent) — never auto-run
+- Add real IoT provider adapters (Home Assistant REST, MQTT) using the existing
+  `integrations.js` interface
+- Swap deterministic planner for a local LLM (e.g. WebLLM) while keeping the
+  high-level-plan-only disclosure rule
+- Move authentication to a real backend (see SECURITY.md)
+- Add wake-word ML model to replace energy-based detection
 
-## ⚠️ Limitations
+## ⚠️ Known Limitations
 
 - Wake word uses simple energy detection (can improve with ML)
 - Web search limited to DuckDuckGo Instant Answer API
 - The task planner is deterministic (rule/recipe based) — it recognizes a
   curated set of goal patterns plus connector-split commands, not arbitrary
   free-form reasoning
-- "Create document" downloads a local `.txt` file (browser sandbox); there is
-  no server-side file store
-- No vision/multimodal input
+- Vision analyzes image *properties* (size, dominant colour, brightness) locally;
+  it does not read text or recognize objects
+- Browser assistance is limited to opening a site (new tab) and reading the
+  *current* page — no cross-tab clicking (needs an extension)
+- "Run command" in Developer Mode is simulated (safe dry-run); ALICE never
+  executes real shell commands
+- IoT ships with virtual (mock) devices only; real hardware needs a provider adapter
+- "Create document"/scaffold download local files (browser sandbox); no server store
+- No server backend: auth is a client-side prototype and API keys must stay
+  server-side in a real deployment
 - Browser must support Web Speech API (voice path); text input works everywhere
+
+## 🔐 Security
+
+See **[SECURITY.md](./SECURITY.md)** for the complete security review, threat
+model, and known gaps.
 
 ## 📄 License
 

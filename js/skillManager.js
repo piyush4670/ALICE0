@@ -1,6 +1,9 @@
 /**
  * ALICE Skill Manager
- * Routes user requests to appropriate skills
+ * Routes user requests to appropriate skills.
+ * Part 5: skills are validated plugins with an optional manifest that
+ * declares name, description, permissions, risk, and error handling.
+ * Skills can be individually enabled/disabled by the user.
  */
 import { state } from './state.js';
 import { calculator } from './skills/calculator.js';
@@ -11,12 +14,17 @@ import { datetime } from './skills/datetime.js';
 import { files } from './skills/files.js';
 import { reader } from './skills/reader.js';
 import { memorySkill } from './skills/memory.js';
+import { vision } from './skills/vision.js';
+import { browserSkill } from './skills/browser.js';
+import { dev } from './skills/dev.js';
+import { iot } from './skills/iot.js';
 
 class SkillManager {
     constructor() {
         this._skills = new Map();
         this._lastSkill = null;
         this._executionHistory = [];
+        this._enabled = new Map(); // name -> boolean
         
         this._registerSkills();
     }
@@ -34,29 +42,105 @@ class SkillManager {
         this.register(files);
         this.register(reader);
         this.register(memorySkill);
+        // Part 5 skills
+        this.register(vision);
+        this.register(browserSkill);
+        this.register(dev);
+        this.register(iot);
         
         state.logActivity(`Registered ${this._skills.size} skills`, 'info');
+    }
+
+    /**
+     * Validate a skill plugin manifest. A skill must define at least a name,
+     * description, patterns, and an execute() function. Optional Part 5
+     * manifest fields (permissions, risk, inputs, actions, output, onError)
+     * are validated when present.
+     * Returns { valid, errors }.
+     */
+    validateSkill(skill) {
+        const errors = [];
+        if (!skill || typeof skill !== 'object') {
+            return { valid: false, errors: ['skill is not an object'] };
+        }
+        if (!skill.name || typeof skill.name !== 'string') errors.push('missing name');
+        if (!skill.description || typeof skill.description !== 'string') errors.push('missing description');
+        if (!Array.isArray(skill.patterns) || skill.patterns.length === 0) errors.push('patterns must be a non-empty array');
+        if (typeof skill.execute !== 'function') errors.push('missing execute()');
+
+        // Optional manifest fields
+        if (skill.permissions !== undefined && !Array.isArray(skill.permissions)) {
+            errors.push('permissions must be an array');
+        }
+        if (skill.risk !== undefined && !['safe', 'medium', 'sensitive'].includes(skill.risk)) {
+            errors.push('risk must be one of: safe, medium, sensitive');
+        }
+        if (skill.inputs !== undefined && !Array.isArray(skill.inputs)) {
+            errors.push('inputs must be an array');
+        }
+        return { valid: errors.length === 0, errors };
     }
 
     /**
      * Register a skill
      */
     register(skill) {
+        const { valid, errors } = this.validateSkill(skill);
+        if (!valid) {
+            state.logActivity(`Skill rejected (${skill?.name || 'unnamed'}): ${errors.join(', ')}`, 'danger');
+            return false;
+        }
         this._skills.set(skill.name, skill);
+        // New skills default to enabled unless already tracked
+        if (!this._enabled.has(skill.name)) {
+            this._enabled.set(skill.name, true);
+        }
+        return true;
+    }
+
+    /**
+     * Enable/disable a skill by name (Part 5). Disabled skills are skipped
+     * by matchSkill, executeByName, and process().
+     */
+    setEnabled(name, enabled) {
+        if (!this._skills.has(name)) return false;
+        this._enabled.set(name, !!enabled);
+        state.logActivity(`Skill "${name}" ${enabled ? 'enabled' : 'disabled'}`, enabled ? 'info' : 'warning');
+        return true;
+    }
+
+    isEnabled(name) {
+        return this._enabled.get(name) !== false;
+    }
+
+    getEnabledMap() {
+        const map = {};
+        for (const name of this._skills.keys()) {
+            map[name] = this.isEnabled(name);
+        }
+        return map;
+    }
+
+    /**
+     * Get all registered skills (including disabled — used by settings UI)
+     */
+    getSkills() {
+        return Array.from(this._skills.values());
+    }
+
+    /**
+     * Get only enabled skills (used for routing and agent discovery)
+     */
+    getEnabledSkills() {
+        return this.getSkills().filter(s => this.isEnabled(s.name));
     }
 
     /**
      * Unregister a skill
      */
     unregister(name) {
-        return this._skills.delete(name);
-    }
-
-    /**
-     * Get all registered skills
-     */
-    getSkills() {
-        return Array.from(this._skills.values());
+        this._skills.delete(name);
+        this._enabled.delete(name);
     }
 
     /**
@@ -127,7 +211,7 @@ class SkillManager {
         const t = text.toLowerCase().trim();
         let bestMatch = null;
         let bestScore = 0;
-        for (const skill of this._skills.values()) {
+        for (const skill of this.getEnabledSkills()) {
             const score = this._calculateMatchScore(t, skill);
             if (score > bestScore) {
                 bestScore = score;
@@ -151,6 +235,12 @@ class SkillManager {
             return {
                 success: false,
                 error: `Skill "${name}" is not available`
+            };
+        }
+        if (!this.isEnabled(name)) {
+            return {
+                success: false,
+                error: `Skill "${name}" is currently disabled. You can re-enable it in Settings.`
             };
         }
 
@@ -184,7 +274,7 @@ class SkillManager {
         let bestMatch = null;
         let bestScore = 0;
 
-        for (const skill of this._skills.values()) {
+        for (const skill of this.getEnabledSkills()) {
             const score = this._calculateMatchScore(text, skill);
             if (score > bestScore) {
                 bestScore = score;
@@ -216,7 +306,11 @@ class SkillManager {
             datetime: ['time', 'date', 'day', 'month', 'year', 'today', 'tomorrow'],
             files: ['file', 'document', 'read', 'open', 'save'],
             reader: ['read aloud', 'summarize', 'extract'],
-            memory: ['remember', 'my', 'forget', 'recall']
+            memory: ['remember', 'my', 'forget', 'recall'],
+            vision: ['image', 'picture', 'photo', 'screenshot', 'diagram', 'see', 'look at', 'vision'],
+            browser: ['browser', 'website', 'webpage', 'web page', 'open site', 'navigate', 'open url', 'visit'],
+            dev: ['code', 'debug', 'programming', 'script', 'error', 'bug', 'fix', 'function', 'javascript', 'project', 'lint', 'scaffold'],
+            iot: ['light', 'device', 'iot', 'sensor', 'smart home', 'thermostat', 'switch', 'turn on', 'turn off']
         };
 
         const skillKeywords = keywords[skill.name] || [];
@@ -232,16 +326,29 @@ class SkillManager {
     }
 
     /**
-     * Execute a skill
+     * Execute a skill. If the skill declares an `onError` handler, it is
+     * consulted before returning a failure result (Part 5 manifest).
      */
     async _executeSkill(skill, input, context) {
-        const result = skill.execute(input, context);
-        
-        // If result is a promise, await it
-        if (result instanceof Promise) {
-            return await result;
+        let result;
+        try {
+            result = skill.execute(input, context);
+            // If result is a promise, await it
+            if (result instanceof Promise) {
+                result = await result;
+            }
+        } catch (e) {
+            result = { success: false, error: e.message || 'execution error' };
         }
-        
+
+        if (result && result.success === false && typeof skill.onError === 'function') {
+            try {
+                const recovered = skill.onError(input, result);
+                if (recovered) return recovered;
+            } catch (e) {
+                // fall through to the original failure
+            }
+        }
         return result;
     }
 

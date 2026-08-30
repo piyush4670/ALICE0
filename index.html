@@ -70,7 +70,7 @@
         <div class="boot-container">
             <div class="boot-header">
                 <h2 class="boot-title">ALICE INITIALIZATION</h2>
-                <p class="boot-subtitle">System Boot Sequence v0.4.0</p>
+                <p class="boot-subtitle">System Boot Sequence v0.5.0</p>
             </div>
             
             <div class="boot-progress">
@@ -180,6 +180,18 @@
                         <div class="skill-item" title="Memory">
                             <span class="skill-badge">🧠</span>
                         </div>
+                        <div class="skill-item" title="Vision">
+                            <span class="skill-badge">👁</span>
+                        </div>
+                        <div class="skill-item" title="Browser">
+                            <span class="skill-badge">🌐</span>
+                        </div>
+                        <div class="skill-item" title="Developer Mode">
+                            <span class="skill-badge">⌨</span>
+                        </div>
+                        <div class="skill-item" title="IoT Devices">
+                            <span class="skill-badge">💡</span>
+                        </div>
                     </div>
                 </div>
                 
@@ -220,10 +232,10 @@
                     </div>
                     
                     <div class="quick-actions">
-                        <button class="quick-action" type="button">Help</button>
-                        <button class="quick-action" type="button">Settings</button>
-                        <button class="quick-action" type="button">Skills</button>
-                        <button class="quick-action" type="button">Memory</button>
+                        <button class="quick-action" type="button" data-action="help">Help</button>
+                        <button class="quick-action" type="button" data-action="settings">Settings</button>
+                        <button class="quick-action" type="button" data-action="skills">Skills</button>
+                        <button class="quick-action" type="button" data-action="memory">Memory</button>
                     </div>
                 </div>
             </div>
@@ -297,18 +309,26 @@
                     
                     <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">
                         <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Version:</span> 0.4.0 DELTA
+                            <span style="color: var(--text-secondary);">Version:</span> 0.5.0 EPSILON
                         </div>
                         <div style="margin-bottom: 8px;">
                             <span style="color: var(--text-secondary);">Build:</span> 2026.08.30
                         </div>
                         <div style="margin-bottom: 8px;">
                             <span style="color: var(--text-secondary);">Skills:</span> 
-                            <span style="color: var(--accent);">8 Active</span>
+                            <span style="color: var(--accent);">12 Active</span>
                         </div>
                         <div style="margin-bottom: 8px;">
                             <span style="color: var(--text-secondary);">Agent:</span> 
                             <span style="color: var(--accent);">Task Planner</span>
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <span style="color: var(--text-secondary);">Vision:</span> 
+                            <span style="color: var(--accent);">Local Canvas</span>
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <span style="color: var(--text-secondary);">IoT:</span> 
+                            <span style="color: var(--accent);">Extensible</span>
                         </div>
                         <div style="margin-bottom: 8px;">
                             <span style="color: var(--text-secondary);">Memory:</span> 
@@ -342,6 +362,37 @@
                 </button>
             </div>
             <p class="confirmation-hint">You can also say "approve" or "cancel".</p>
+        </div>
+    </div>
+
+    <!-- ========================================
+         NOTIFICATIONS (Part 5)
+         ======================================== -->
+    <div id="notification-center" aria-live="polite"></div>
+
+    <!-- ========================================
+         SETTINGS MODAL (Part 5)
+         ======================================== -->
+    <div id="settings-modal" aria-hidden="true" role="dialog" aria-modal="true">
+        <div class="alice-modal-dialog">
+            <div class="alice-modal-header">
+                <h3 class="alice-modal-title">Settings</h3>
+                <button class="alice-modal-close" data-close="settings" aria-label="Close">×</button>
+            </div>
+            <div class="alice-modal-body" id="settings-body"><!-- rendered dynamically --></div>
+        </div>
+    </div>
+
+    <!-- ========================================
+         MEMORY MANAGEMENT MODAL (Part 5)
+         ======================================== -->
+    <div id="memory-modal" aria-hidden="true" role="dialog" aria-modal="true">
+        <div class="alice-modal-dialog">
+            <div class="alice-modal-header">
+                <h3 class="alice-modal-title">Memory Management</h3>
+                <button class="alice-modal-close" data-close="memory" aria-label="Close">×</button>
+            </div>
+            <div class="alice-modal-body" id="memory-body"><!-- rendered dynamically --></div>
         </div>
     </div>
 

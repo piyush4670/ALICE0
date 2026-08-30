@@ -1846,6 +1846,261 @@ body {
 .state-indicator.waiting .state-text { color: var(--warning); }
 
 /* ========================================
+   PART 5 — NOTIFICATIONS, MODALS, SETTINGS, MEMORY
+   ======================================== */
+
+/* Notifications */
+#notification-center {
+    position: fixed;
+    top: 70px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    z-index: 1500;
+    max-width: 340px;
+    pointer-events: none;
+}
+
+.alice-notification {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--primary);
+    border-radius: 6px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    pointer-events: auto;
+    animation: fadeIn 0.3s ease forwards;
+}
+
+.alice-notification.success { border-left-color: var(--accent); }
+.alice-notification.warning { border-left-color: var(--warning); }
+.alice-notification.danger { border-left-color: var(--danger); }
+
+.alice-notification-icon {
+    font-size: 0.9rem;
+    flex-shrink: 0;
+}
+
+.alice-notification-text {
+    flex: 1;
+    font-family: var(--font-body);
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    line-height: 1.35;
+}
+
+.alice-notification-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 1rem;
+    padding: 0 2px;
+    transition: color var(--transition-fast);
+}
+
+.alice-notification-close:hover { color: var(--danger); }
+
+/* Generic modal (settings / memory) */
+.alice-modal-dialog {
+    width: 100%;
+    max-width: 520px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-surface);
+    border: 1px solid var(--primary-dim);
+    border-radius: 10px;
+    box-shadow: 0 0 40px rgba(0, 240, 255, 0.2), var(--glow-md);
+    overflow: hidden;
+}
+
+.alice-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-md) var(--space-lg);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.alice-modal-title {
+    font-family: var(--font-display);
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--primary);
+}
+
+.alice-modal-close {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 1.4rem;
+    line-height: 1;
+    padding: 0;
+    transition: color var(--transition-fast);
+}
+
+.alice-modal-close:hover { color: var(--danger); }
+
+.alice-modal-body {
+    overflow-y: auto;
+    padding: var(--space-lg);
+}
+
+#settings-modal,
+#memory-modal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(5, 5, 10, 0.7);
+    backdrop-filter: blur(6px);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--transition-normal), visibility var(--transition-normal);
+    z-index: 1900;
+}
+
+#settings-modal.visible,
+#memory-modal.visible {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* Settings rows */
+.settings-group {
+    margin-bottom: var(--space-lg);
+}
+
+.settings-group-title {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: var(--space-sm);
+    padding-bottom: var(--space-xs);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.settings-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--space-xs) 0;
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    text-transform: capitalize;
+}
+
+.settings-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--primary);
+    cursor: pointer;
+}
+
+.settings-row select {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
+.settings-footer {
+    margin-top: var(--space-md);
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-sm);
+}
+
+.settings-footer .confirm-btn {
+    flex: 0 0 auto;
+    padding: var(--space-xs) var(--space-lg);
+}
+
+/* Memory management */
+.memory-sections {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+}
+
+.memory-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--space-sm);
+    padding: var(--space-xs) 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.memory-row:last-child { border-bottom: none; }
+
+.memory-row-text {
+    flex: 1;
+    font-family: var(--font-body);
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    word-break: break-word;
+    line-height: 1.35;
+}
+
+.memory-row-text strong { color: var(--text-primary); }
+
+.memory-row-delete {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 0.8rem;
+    padding: 2px 6px;
+    transition: all var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.memory-row-delete:hover {
+    color: var(--danger);
+    border-color: var(--danger);
+}
+
+.memory-empty {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    padding: var(--space-xs) 0;
+}
+
+.memory-tag {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-right: 6px;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+}
+
+.memory-tag.completed { border-color: var(--accent); color: var(--accent); }
+.memory-tag.failed { border-color: var(--danger); color: var(--danger); }
+.memory-tag.cancelled { border-color: var(--warning); color: var(--warning); }
+
+/* ========================================
    UTILITY CLASSES
    ======================================== */
 .visually-hidden {

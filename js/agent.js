@@ -22,6 +22,7 @@ import { state } from './state.js';
 import { taskPlanner } from './taskPlanner.js';
 import { skillManager } from './skillManager.js';
 import { permissions } from './permissions.js';
+import { memory } from './memory.js';
 import { summarizeText, delay } from './utils.js';
 
 class Agent {
@@ -252,6 +253,7 @@ class Agent {
             error: `Cancelled at "${step.label}"`
         });
         state.logActivity('Task cancelled by user', 'warning');
+        memory.recordTask(this._goal, 'cancelled');
         const msg = 'Understood — task cancelled. Nothing was changed.';
         return { response: msg, success: false };
     }
@@ -266,6 +268,7 @@ class Agent {
             error: `Step "${step.label}" failed: ${error}`
         });
         state.logActivity(`Task failed at "${step.label}": ${error}`, 'danger');
+        memory.recordTask(this._goal, 'failed', `Failed at "${step.label}": ${error}`);
         const msg = `I had to stop. ${step.label} could not be completed: ${error || 'unknown error'}.`;
         return { response: msg, success: false };
     }
@@ -297,6 +300,7 @@ class Agent {
             result: report
         });
         state.logActivity('Task completed successfully', 'success');
+        memory.recordTask(this._goal, 'completed', report);
         return { response: report, success: true, context: this._context };
     }
 

@@ -9,6 +9,8 @@ import { bootSequence } from './boot.js';
 import { hud } from './hud.js';
 import { audioManager } from './audio.js';
 import { conversation } from './conversation.js';
+import { settings } from './settings.js';
+import { proactive } from './proactive.js';
 import { delay } from './utils.js';
 
 class ALICEApp {
@@ -37,6 +39,9 @@ class ALICEApp {
 
         // Start time updates
         state.startTimeUpdates();
+
+        // Load and apply user settings (Part 5)
+        settings.init();
 
         // Show auth screen
         this._showScreen('auth');
@@ -145,6 +150,10 @@ class ALICEApp {
         hud.init(this._screens.hud);
         
         state.logActivity('Welcome to ALICE', 'success');
+        state.notify('Systems online — how can I help?', 'success');
+
+        // Start proactive assistance (respects settings)
+        proactive.start();
         
         // Start voice system after a short delay
         setTimeout(() => {
