@@ -7,6 +7,8 @@ import { state } from './state.js';
 import { auth } from './auth.js';
 import { bootSequence } from './boot.js';
 import { hud } from './hud.js';
+import { audioManager } from './audio.js';
+import { conversation } from './conversation.js';
 import { delay } from './utils.js';
 
 class ALICEApp {
@@ -18,6 +20,8 @@ class ALICEApp {
     async init() {
         console.log(`%c ALICE Interface v${CONFIG.system.version} (${CONFIG.system.codename}) `, 
             'background: #00f0ff; color: #0a0a0f; font-weight: bold; padding: 4px 8px; border-radius: 4px;');
+        console.log('%c Voice Systems: Part 2 Active ', 
+            'background: #00ff88; color: #0a0a0f; padding: 4px 8px; border-radius: 4px;');
         
         // Cache screen elements
         this._screens.auth = document.getElementById('auth-screen');
@@ -27,6 +31,7 @@ class ALICEApp {
         // Setup event listeners
         this._setupAuthEvents();
         this._setupDebugControls();
+        this._setupVoiceControls();
 
         // Start time updates
         state.startTimeUpdates();
@@ -114,7 +119,7 @@ class ALICEApp {
     async _startBootSequence() {
         this._showScreen('boot');
         
-        // Initialize boot items in DOM
+        // Update boot items to include voice systems
         const itemsContainer = this._screens.boot?.querySelector('.boot-items');
         if (itemsContainer) {
             const bootItems = bootSequence.bootItems;
@@ -138,6 +143,78 @@ class ALICEApp {
         hud.init(this._screens.hud);
         
         state.logActivity('Welcome to ALICE', 'success');
+        
+        // Start voice system after a short delay
+        setTimeout(() => {
+            this._initVoiceSystem();
+        }, 1000);
+    }
+
+    async _initVoiceSystem() {
+        // Request microphone permission
+        const hasPermission = await audioManager.requestPermission();
+        
+        state.setVoiceState('isMicrophoneAvailable', audioManager.isAvailable());
+        state.setVoiceState('isMicrophonePermission', hasPermission);
+        
+        if (!hasPermission) {
+            state.logActivity('Microphone access required for voice features', 'warning');
+            return;
+        }
+        
+        // Start conversation system
+        const started = await conversation.start();
+        
+        if (started) {
+            state.setVoiceState('isActive', true);
+            state.logActivity('Voice system ready - say "Hey Alice" to activate', 'success');
+            
+            // Setup conversation callbacks for HUD
+            conversation.onWakeWord(() => {
+                state.setVoiceState('isListening', true);
+            });
+            
+            conversation.onSpeechResult((result) => {
+                state.setTranscript(result.text);
+            });
+            
+            conversation.onAliceSpeak((text) => {
+                state.setLastResponse(text);
+            });
+        }
+    }
+
+    // Voice control buttons
+    _setupVoiceControls() {
+        // Manual wake button
+        const wakeButton = document.getElementById('voice-wake-btn');
+        wakeButton?.addEventListener('click', () => {
+            if (conversation.isActive()) {
+                conversation.triggerWakeWord();
+            }
+        });
+        
+        // Stop speaking button
+        const stopButton = document.getElementById('voice-stop-btn');
+        stopButton?.addEventListener('click', () => {
+            if (conversation.isListening()) {
+                // Stop listening
+            }
+            conversation.stopSpeaking();
+        });
+        
+        // Microphone toggle
+        const micToggle = document.getElementById('mic-toggle');
+        micToggle?.addEventListener('click', () => {
+            const voiceState = state.getVoiceState();
+            if (voiceState.isActive) {
+                conversation.stop();
+                state.setVoiceState('isActive', false);
+                state.logActivity('Voice system disabled', 'info');
+            } else {
+                this._initVoiceSystem();
+            }
+        });
     }
 
     // Debug controls for testing states
@@ -149,13 +226,26 @@ class ALICEApp {
         stateButtons.forEach(button => {
             button.addEventListener('click', () => {
                 const targetState = button.dataset.state;
-                hud.setState(targetState);
+                state.set('aliceState', targetState);
+                
+                // Update active button
+                stateButtons.forEach(btn => btn.classList.remove('active'));
+                button.classList.add('active');
             });
+        });
+
+        // Voice debug section
+        const voiceTestBtn = debugPanel.querySelector('#voice-test-btn');
+        voiceTestBtn?.addEventListener('click', () => {
+            if (conversation.isActive()) {
+                conversation.triggerWakeWord();
+            }
         });
 
         const logoutBtn = debugPanel.querySelector('#logout-btn');
         logoutBtn?.addEventListener('click', () => {
             hud.destroy();
+            conversation.stop();
             auth.logout();
             this._showScreen('auth');
             
@@ -170,12 +260,22 @@ class ALICEApp {
                 status.className = 'auth-status';
             }
             if (dots) dots.forEach(dot => dot.classList.remove('filled'));
+            
+            // Reset voice state
+            state.setVoiceState('isActive', false);
+            state.setVoiceState('isListening', false);
         });
 
         // Toggle debug panel
         const toggleBtn = document.getElementById('debug-toggle');
+        const closeBtn = debugPanel.querySelector('.debug-close');
+        
         toggleBtn?.addEventListener('click', () => {
-            debugPanel.classList.toggle('visible');
+            debugPanel.classList.add('visible');
+        });
+        
+        closeBtn?.addEventListener('click', () => {
+            debugPanel.classList.remove('visible');
         });
     }
 }

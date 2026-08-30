@@ -12,9 +12,11 @@ class BootSequence {
             { id: 'core', name: 'ALICE CORE', status: 'pending', icon: '◆' },
             { id: 'interface', name: 'Interface Systems', status: 'pending', icon: '◈' },
             { id: 'audio', name: 'Audio System', status: 'pending', icon: '◇' },
-            { id: 'intelligence', name: 'Intelligence Engine', status: 'pending', icon: '◉' },
-            { id: 'security', name: 'Security Protocols', status: 'pending', icon: '◎' },
-            { id: 'network', name: 'Network Interface', status: 'pending', icon: '◐' }
+            { id: 'voice', name: 'Voice Recognition', status: 'pending', icon: '◉' },
+            { id: 'tts', name: 'Speech Synthesis', status: 'pending', icon: '◎' },
+            { id: 'intelligence', name: 'Intelligence Engine', status: 'pending', icon: '◐' },
+            { id: 'security', name: 'Security Protocols', status: 'pending', icon: '⬡' },
+            { id: 'network', name: 'Network Interface', status: 'pending', icon: '◑' }
         ];
         this._currentIndex = 0;
         this._isRunning = false;
@@ -75,6 +77,12 @@ class BootSequence {
                     itemEl.classList.add('complete');
                     item.status = 'complete';
                     
+                    // Update status text in item
+                    const statusEl = itemEl.querySelector('.boot-item-status');
+                    if (statusEl) {
+                        statusEl.textContent = 'Online';
+                    }
+                    
                     // Flash animation
                     const iconEl = itemEl.querySelector('.boot-item-icon');
                     if (iconEl) {
@@ -99,7 +107,7 @@ class BootSequence {
         
         // Update final status
         if (statusText) {
-            statusText.textContent = 'All systems initialized';
+            statusText.textContent = 'All systems online';
             statusText.classList.add('complete');
         }
 

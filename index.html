@@ -70,7 +70,7 @@
         <div class="boot-container">
             <div class="boot-header">
                 <h2 class="boot-title">ALICE INITIALIZATION</h2>
-                <p class="boot-subtitle">System Boot Sequence v0.1.0</p>
+                <p class="boot-subtitle">System Boot Sequence v0.2.0</p>
             </div>
             
             <div class="boot-progress">
@@ -149,6 +149,36 @@
                     </div>
                 </div>
                 
+                <!-- Voice Controls Panel -->
+                <div class="hud-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-icon">◇</span>
+                        <span class="hud-panel-title">Voice Controls</span>
+                    </div>
+                    
+                    <!-- Voice Status Indicator -->
+                    <div class="voice-status inactive">
+                        <span class="mic-icon">🎤</span>
+                        <span class="voice-status-text">Initializing...</span>
+                    </div>
+                    
+                    <!-- Voice Control Buttons -->
+                    <div class="voice-controls">
+                        <button class="voice-btn primary" id="voice-wake-btn" type="button" title="Wake ALICE">
+                            <span class="voice-btn-icon">👋</span>
+                            <span class="voice-btn-label">Wake</span>
+                        </button>
+                        <button class="voice-btn" id="voice-stop-btn" type="button" title="Stop speaking">
+                            <span class="voice-btn-icon">⏹</span>
+                            <span class="voice-btn-label">Stop</span>
+                        </button>
+                        <button class="voice-btn" id="mic-toggle" type="button" title="Toggle microphone">
+                            <span class="voice-btn-icon">🎙</span>
+                            <span class="voice-btn-label">Mic</span>
+                        </button>
+                    </div>
+                </div>
+                
                 <div class="hud-panel">
                     <div class="hud-panel-header">
                         <span class="hud-panel-icon">◈</span>
@@ -176,6 +206,10 @@
                         <div class="orb-core-glow"></div>
                     </div>
                 </div>
+                
+                <!-- Transcript Display -->
+                <div class="transcript-display"></div>
+                <div class="response-display"></div>
                 
                 <div class="state-indicator idle">
                     <div class="state-label">Current State</div>
@@ -208,10 +242,14 @@
                     
                     <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">
                         <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Version:</span> 0.1.0 ALPHA
+                            <span style="color: var(--text-secondary);">Version:</span> 0.2.0 BETA
                         </div>
                         <div style="margin-bottom: 8px;">
                             <span style="color: var(--text-secondary);">Build:</span> 2026.08.30
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <span style="color: var(--text-secondary);">Voice:</span> 
+                            <span style="color: var(--accent);">Active</span>
                         </div>
                         <div>
                             <span style="color: var(--text-secondary);">Status:</span> 
@@ -241,6 +279,11 @@
                 <button class="debug-btn" data-state="SPEAKING">SPEAKING</button>
                 <button class="debug-btn" data-state="EXECUTING">EXECUTING</button>
             </div>
+        </div>
+        
+        <div class="debug-section">
+            <div class="debug-label">Voice Test</div>
+            <button id="voice-test-btn" class="debug-btn" style="width: 100%;">Test Wake Word</button>
         </div>
         
         <div class="debug-section">

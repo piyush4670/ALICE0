@@ -1,10 +1,12 @@
 /**
  * ALICE HUD Module
  * Main Heads-Up Display for the AI interface
+ * Part 2: Integrated with voice system
  */
 import { CONFIG } from './config.js';
 import { state } from './state.js';
-import { formatTime, formatDate, animateNumber } from './utils.js';
+import { audioManager } from './audio.js';
+import { formatTime, formatDate } from './utils.js';
 
 class ALICEHUD {
     constructor() {
@@ -12,6 +14,7 @@ class ALICEHUD {
         this._orbParticles = [];
         this._waveformData = [];
         this._hudElement = null;
+        this._voiceIndicatorElement = null;
     }
 
     init(hudElement) {
@@ -19,6 +22,7 @@ class ALICEHUD {
         this._setupOrb();
         this._setupWaveform();
         this._setupStateSubscription();
+        this._setupVoiceUI();
         this._startRenderLoop();
         
         // Update time and date
@@ -29,6 +33,15 @@ class ALICEHUD {
         state.startMetricsSimulation();
         this._updateMetricsDisplay();
         state.subscribe('systemMetrics', () => this._updateMetricsDisplay());
+        
+        // Subscribe to voice state changes
+        state.subscribe('voice.currentTranscript', (text) => {
+            this._updateTranscriptDisplay(text);
+        });
+        
+        state.subscribe('voice.lastAliceResponse', (text) => {
+            this._updateResponseDisplay(text);
+        });
         
         state.logActivity('HUD initialized and ready', 'success');
     }
@@ -42,6 +55,7 @@ class ALICEHUD {
         const orbContainer = orb.querySelector('.orb-particles');
         
         if (orbContainer) {
+            orbContainer.innerHTML = ''; // Clear existing
             for (let i = 0; i < particleCount; i++) {
                 const particle = document.createElement('div');
                 particle.className = 'orb-particle';
@@ -106,31 +120,44 @@ class ALICEHUD {
         const width = canvas.offsetWidth;
         const height = canvas.offsetHeight;
         const aliceState = state.get('aliceState');
+        const voiceState = state.getVoiceState();
         
-        // Update data based on state
-        const intensity = {
-            IDLE: 0.2,
+        // Determine intensity based on actual audio if capturing
+        let intensity = {
+            IDLE: 0.15,
             LISTENING: 0.8,
-            PROCESSING: 0.6,
+            PROCESSING: 0.5,
             SPEAKING: 1.0,
             EXECUTING: 0.7
-        }[aliceState] || 0.2;
+        }[aliceState] || 0.15;
 
         // Shift data and add new values
         for (let i = 0; i < this._waveformData.length - 1; i++) {
             this._waveformData[i] = this._waveformData[i + 1];
         }
         
-        // Generate new value based on state
         let newValue;
-        if (aliceState === 'IDLE') {
-            newValue = Math.sin(Date.now() / 1000) * 0.1;
+        
+        // Use actual audio data if available and listening
+        if (audioManager.isCapturing() && (aliceState === 'LISTENING' || aliceState === 'SPEAKING')) {
+            const audioLevel = audioManager.getAudioLevel();
+            const frequencyData = audioManager.getFrequencyData();
+            
+            // Calculate level from actual audio
+            const actualLevel = audioLevel * intensity * 2;
+            newValue = actualLevel + (Math.random() - 0.5) * 0.1;
         } else if (aliceState === 'SPEAKING') {
+            // Simulate speech waveform
             newValue = (Math.random() - 0.5) * intensity;
         } else if (aliceState === 'LISTENING') {
-            newValue = (Math.sin(Date.now() / 100) + Math.sin(Date.now() / 50)) * 0.2 * intensity;
+            // Listening visualization - respond to ambient
+            const ambientLevel = audioManager.getAudioLevel();
+            newValue = (Math.random() - 0.5) * ambientLevel * 3;
+        } else if (aliceState === 'IDLE') {
+            // Subtle idle animation
+            newValue = Math.sin(Date.now() / 1000) * 0.08;
         } else {
-            newValue = (Math.random() - 0.5) * intensity;
+            newValue = (Math.random() - 0.5) * intensity * 0.5;
         }
         
         this._waveformData[this._waveformData.length - 1] = newValue;
@@ -141,15 +168,25 @@ class ALICEHUD {
         const barWidth = width / this._waveformData.length;
         const centerY = height / 2;
         
-        ctx.fillStyle = CONFIG.visuals.primaryColor;
+        // Dynamic color based on state
+        const colors = {
+            IDLE: CONFIG.visuals.primaryColor,
+            LISTENING: CONFIG.visuals.primaryColor,
+            PROCESSING: CONFIG.visuals.warningColor,
+            SPEAKING: CONFIG.visuals.accentColor,
+            EXECUTING: CONFIG.visuals.secondaryColor
+        };
+        
+        ctx.fillStyle = colors[aliceState] || CONFIG.visuals.primaryColor;
         ctx.shadowBlur = 10;
-        ctx.shadowColor = CONFIG.visuals.primaryColor;
+        ctx.shadowColor = colors[aliceState] || CONFIG.visuals.primaryColor;
 
         for (let i = 0; i < this._waveformData.length; i++) {
-            const barHeight = Math.abs(this._waveformData[i]) * height * 0.8;
+            const barHeight = Math.abs(this._waveformData[i]) * height * 0.9;
             const x = i * barWidth;
             
-            ctx.fillRect(x, centerY - barHeight / 2, barWidth - 1, barHeight);
+            // Draw bar
+            ctx.fillRect(x, centerY - barHeight / 2, barWidth - 1, Math.max(2, barHeight));
         }
     }
 
@@ -161,6 +198,51 @@ class ALICEHUD {
         state.subscribe('activityLog', () => {
             this._updateActivityLog();
         });
+    }
+
+    _setupVoiceUI() {
+        // Voice status indicator
+        const voiceStatus = this._hudElement?.querySelector('.voice-status');
+        if (voiceStatus) {
+            this._voiceIndicatorElement = voiceStatus;
+        }
+        
+        // Update voice status based on state
+        state.subscribe('voice', (voiceState) => {
+            this._updateVoiceStatus(voiceState);
+        });
+    }
+
+    _updateVoiceStatus(voiceState) {
+        const voiceStatus = this._hudElement?.querySelector('.voice-status');
+        if (!voiceStatus) return;
+        
+        const micIcon = voiceStatus.querySelector('.mic-icon');
+        const statusText = voiceStatus.querySelector('.voice-status-text');
+        
+        if (voiceState.isActive && voiceState.isMicrophonePermission) {
+            if (voiceState.isListening) {
+                statusText.textContent = 'Listening...';
+                voiceStatus.className = 'voice-status listening';
+                micIcon?.classList.add('active');
+            } else if (state.get('aliceState') === 'SPEAKING') {
+                statusText.textContent = 'Speaking...';
+                voiceStatus.className = 'voice-status speaking';
+                micIcon?.classList.remove('active');
+            } else {
+                statusText.textContent = 'Say "Hey Alice"';
+                voiceStatus.className = 'voice-status ready';
+                micIcon?.classList.remove('active');
+            }
+        } else if (!voiceState.isMicrophonePermission) {
+            statusText.textContent = 'Mic denied';
+            voiceStatus.className = 'voice-status error';
+            micIcon?.classList.remove('active');
+        } else {
+            statusText.textContent = 'Voice off';
+            voiceStatus.className = 'voice-status inactive';
+            micIcon?.classList.remove('active');
+        }
     }
 
     _transitionState(from, to) {
@@ -190,6 +272,9 @@ class ALICEHUD {
         if (orb) {
             orb.className = `alice-orb ${to.toLowerCase()}`;
         }
+        
+        // Update voice status
+        this._updateVoiceStatus(state.getVoiceState());
 
         state.logActivity(`State changed: ${from} → ${to}`, 'info');
     }
@@ -266,7 +351,23 @@ class ALICEHUD {
         logContainer.innerHTML = html || '<div class="activity-empty">No recent activity</div>';
     }
 
-    // Public methods for state simulation (Part 2 will control this)
+    _updateTranscriptDisplay(text) {
+        const transcriptEl = this._hudElement?.querySelector('.transcript-display');
+        if (transcriptEl) {
+            transcriptEl.textContent = text || '';
+            transcriptEl.classList.toggle('visible', text.length > 0);
+        }
+    }
+
+    _updateResponseDisplay(text) {
+        const responseEl = this._hudElement?.querySelector('.response-display');
+        if (responseEl) {
+            responseEl.textContent = text || '';
+            responseEl.classList.toggle('visible', text.length > 0);
+        }
+    }
+
+    // Public methods
     setState(newState) {
         state.set('aliceState', newState);
     }

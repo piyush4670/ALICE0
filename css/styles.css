@@ -1173,6 +1173,204 @@ body {
 }
 
 /* ========================================
+   VOICE CONTROLS
+   ======================================== */
+.voice-status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: var(--space-sm) var(--space-md);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    margin-bottom: var(--space-md);
+    transition: all var(--transition-normal);
+}
+
+.voice-status .mic-icon {
+    font-size: 1rem;
+    opacity: 0.5;
+    transition: all var(--transition-normal);
+}
+
+.voice-status .voice-status-text {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    flex: 1;
+}
+
+.voice-status.ready {
+    border-color: var(--primary-dim);
+}
+
+.voice-status.ready .mic-icon {
+    opacity: 0.7;
+    animation: mic-pulse 2s ease-in-out infinite;
+}
+
+.voice-status.listening {
+    border-color: var(--primary);
+    background: rgba(0, 240, 255, 0.1);
+}
+
+.voice-status.listening .mic-icon {
+    opacity: 1;
+    color: var(--primary);
+    animation: mic-active 0.5s ease-in-out infinite;
+}
+
+.voice-status.speaking {
+    border-color: var(--accent);
+    background: rgba(0, 255, 136, 0.1);
+}
+
+.voice-status.speaking .mic-icon {
+    opacity: 1;
+    color: var(--accent);
+}
+
+.voice-status.inactive {
+    opacity: 0.5;
+}
+
+.voice-status.error {
+    border-color: var(--danger);
+}
+
+.voice-status.error .mic-icon {
+    opacity: 1;
+    color: var(--danger);
+}
+
+@keyframes mic-pulse {
+    0%, 100% { transform: scale(1); opacity: 0.7; }
+    50% { transform: scale(1.1); opacity: 1; }
+}
+
+@keyframes mic-active {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.2); }
+}
+
+.voice-controls {
+    display: flex;
+    gap: var(--space-sm);
+}
+
+.voice-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-xs);
+    padding: var(--space-sm);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.voice-btn:hover {
+    border-color: var(--primary);
+    background: rgba(0, 240, 255, 0.05);
+}
+
+.voice-btn:active {
+    transform: scale(0.95);
+}
+
+.voice-btn.primary {
+    background: linear-gradient(135deg, rgba(0, 240, 255, 0.2) 0%, rgba(0, 255, 136, 0.2) 100%);
+    border-color: var(--primary);
+}
+
+.voice-btn.primary:hover {
+    background: linear-gradient(135deg, rgba(0, 240, 255, 0.3) 0%, rgba(0, 255, 136, 0.3) 100%);
+    box-shadow: var(--glow-sm);
+}
+
+.voice-btn-icon {
+    font-size: 1.25rem;
+}
+
+.voice-btn-label {
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.voice-btn:hover .voice-btn-label {
+    color: var(--primary);
+}
+
+/* Transcript Display */
+.transcript-display,
+.response-display {
+    position: absolute;
+    top: -40px;
+    left: 50%;
+    transform: translateX(-50%);
+    padding: var(--space-sm) var(--space-lg);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    text-align: center;
+    max-width: 400px;
+    opacity: 0;
+    transition: opacity var(--transition-normal);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.transcript-display.visible {
+    opacity: 1;
+}
+
+.response-display {
+    top: auto;
+    bottom: -40px;
+    background: linear-gradient(135deg, rgba(0, 255, 136, 0.1) 0%, rgba(0, 240, 255, 0.1) 100%);
+    border-color: var(--accent);
+}
+
+.response-display.visible {
+    opacity: 1;
+}
+
+/* Orb listening animation */
+.alice-orb.listening {
+    animation: orb-listening 1s ease-in-out infinite;
+}
+
+.alice-orb.listening .orb-ring {
+    animation: ring-listen 0.5s ease-in-out infinite;
+}
+
+@keyframes orb-listening {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.02); }
+}
+
+@keyframes ring-listen {
+    0%, 100% { 
+        opacity: 0.3; 
+        transform: scale(1);
+    }
+    50% { 
+        opacity: 0.7; 
+        transform: scale(1.05);
+    }
+}
+
+/* ========================================
    UTILITY CLASSES
    ======================================== */
 .visually-hidden {

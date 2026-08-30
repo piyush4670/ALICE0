@@ -1,7 +1,7 @@
 /**
  * ALICE Configuration
  * Central configuration for the ALICE interface
- * Part 2+ will connect real services via these interfaces
+ * Part 2: Voice systems integrated
  */
 export const CONFIG = {
     // Authentication (placeholder - replace with real auth in Part 4)
@@ -14,8 +14,8 @@ export const CONFIG = {
 
     // Boot sequence configuration
     boot: {
-        sequenceDuration: 3000, // Total boot animation duration
-        itemDelay: 400, // Delay between each boot item
+        sequenceDuration: 3500, // Total boot animation duration
+        itemDelay: 500, // Delay between each boot item
         progressSpeed: 100 // Update frequency for progress bar
     },
 
@@ -26,6 +26,18 @@ export const CONFIG = {
         PROCESSING: 'PROCESSING',
         SPEAKING: 'SPEAKING',
         EXECUTING: 'EXECUTING'
+    },
+
+    // Voice configuration
+    voice: {
+        wakeWordEnabled: true,
+        autoWakeAfterSpeaking: true,
+        wakeWordCooldown: 3000, // ms between wake detections
+        speechTimeout: 10000, // ms before stopping if no speech
+        // TTS settings
+        ttsRate: 0.95,
+        ttsPitch: 1.0,
+        ttsVolume: 1.0
     },
 
     // Visual configuration
@@ -40,17 +52,17 @@ export const CONFIG = {
         textColor: '#e0e0e0'
     },
 
-    // System info (placeholders for Part 2+)
+    // System info
     system: {
-        version: '0.1.0',
-        codename: 'ALPHA',
+        version: '0.2.0',
+        codename: 'BETA',
         buildDate: '2026-08-30'
     },
 
     // Interface placeholders for future features
     interfaces: {
-        speechRecognition: null, // Part 2: Web Speech API
-        textToSpeech: null, // Part 2: Web Speech API
+        speechRecognition: 'Web Speech API', // Part 2: Implemented
+        textToSpeech: 'Web Speech API', // Part 2: Implemented
         aiBrain: null, // Part 3: AI backend
         memory: null, // Part 4: Memory system
         tools: null // Part 5: Tool execution
@@ -62,3 +74,4 @@ Object.freeze(CONFIG);
 Object.freeze(CONFIG.states);
 Object.freeze(CONFIG.visuals);
 Object.freeze(CONFIG.system);
+Object.freeze(CONFIG.voice);
