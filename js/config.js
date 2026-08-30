@@ -1,7 +1,7 @@
 /**
  * ALICE Configuration
  * Central configuration for the ALICE interface
- * Part 3: Memory, Tools & Skills integrated
+ * Part 4: Agentic Intelligence (Task Planner + Execution Loop)
  */
 export const CONFIG = {
     // Authentication (placeholder - replace with real auth in Part 4)
@@ -19,7 +19,7 @@ export const CONFIG = {
         progressSpeed: 100 // Update frequency for progress bar
     },
 
-    // Application states (including skill execution states)
+    // Application states (including skill execution + agent states)
     states: {
         IDLE: 'IDLE',
         LISTENING: 'LISTENING',
@@ -28,7 +28,9 @@ export const CONFIG = {
         EXECUTING: 'EXECUTING',
         UNDERSTANDING: 'UNDERSTANDING',
         SELECTING_TOOL: 'SELECTING_TOOL',
-        COMPLETING: 'COMPLETING'
+        COMPLETING: 'COMPLETING',
+        PLANNING: 'PLANNING',
+        WAITING: 'WAITING'
     },
 
     // Voice configuration
@@ -54,6 +56,28 @@ export const CONFIG = {
         }
     },
 
+    // Agent / Task Planner configuration (Part 4)
+    agent: {
+        enabled: true,
+        // Maximum number of retries for a failed tool before giving up
+        maxRetries: 1,
+        // Visual pacing between steps (ms) so the HUD stays legible
+        stepDelay: 550,
+        // Pause before a retry attempt (ms)
+        retryDelay: 800,
+        // Maximum number of steps allowed in a single generated plan
+        maxSteps: 8,
+        // High-level task progress is spoken; internal reasoning is never exposed
+        speakProgress: true
+    },
+
+    // Permission system (Part 4)
+    permissions: {
+        enabled: true,
+        // Actions that must pause for explicit user confirmation
+        requireConfirmation: true
+    },
+
     // Visual configuration
     visuals: {
         primaryColor: '#00f0ff', // Cyan
@@ -68,8 +92,8 @@ export const CONFIG = {
 
     // System info
     system: {
-        version: '0.3.0',
-        codename: 'GAMMA',
+        version: '0.4.0',
+        codename: 'DELTA',
         buildDate: '2026-08-30'
     },
 
@@ -77,7 +101,7 @@ export const CONFIG = {
     interfaces: {
         speechRecognition: 'Web Speech API', // Part 2: Implemented
         textToSpeech: 'Web Speech API', // Part 2: Implemented
-        aiBrain: null, // Part 3: Skills system
+        aiBrain: null, // Part 4: Task Planner (deterministic, no hidden reasoning)
         memory: 'localStorage', // Part 3: Implemented
         tools: 'Skill System' // Part 3: Implemented
     }
@@ -90,3 +114,5 @@ Object.freeze(CONFIG.visuals);
 Object.freeze(CONFIG.system);
 Object.freeze(CONFIG.voice);
 Object.freeze(CONFIG.skills);
+Object.freeze(CONFIG.agent);
+Object.freeze(CONFIG.permissions);

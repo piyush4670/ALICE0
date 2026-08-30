@@ -32,6 +32,8 @@ class ALICEApp {
         this._setupAuthEvents();
         this._setupDebugControls();
         this._setupVoiceControls();
+        this._setupCommandInput();
+        this._setupAgentDemos();
 
         // Start time updates
         state.startTimeUpdates();
@@ -214,6 +216,36 @@ class ALICEApp {
             } else {
                 this._initVoiceSystem();
             }
+        });
+    }
+
+    // Text command input (Part 4) — lets the user drive multi-step tasks
+    // without needing the microphone (useful for testing/demo environments).
+    _setupCommandInput() {
+        const form = document.getElementById('command-form');
+        const input = document.getElementById('command-input');
+        if (!form || !input) return;
+
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const text = input.value.trim();
+            if (!text) return;
+            input.value = '';
+            state.setTranscript(text);
+            conversation.processText(text);
+        });
+    }
+
+    // Demo triggers for agentic tasks (Part 4)
+    _setupAgentDemos() {
+        const researchBtn = document.getElementById('demo-research-btn');
+        researchBtn?.addEventListener('click', () => {
+            conversation.processText('research quantum computing, summarize the important information and create a document');
+        });
+
+        const confirmBtn = document.getElementById('demo-confirm-btn');
+        confirmBtn?.addEventListener('click', () => {
+            conversation.processText('delete my note');
         });
     }
 

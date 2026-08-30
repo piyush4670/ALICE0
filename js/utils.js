@@ -123,6 +123,66 @@ export function createSVG(tag, attributes = {}) {
 }
 
 /**
+ * Escape a string for safe insertion into HTML (prevents markup injection
+ * in dynamic HUD panels such as the task dashboard).
+ */
+export function escapeHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
+ * Lightweight extractive text summarization (no external services).
+ * Splits text into sentences, then returns an ordered selection of the most
+ * representative ones. Used by the agent's "process information" step — this
+ * is a general helper, not a duplicate of the `reader` skill (which operates
+ * on user-selected documents).
+ */
+export function summarizeText(text, maxSentences = 3) {
+    if (!text || typeof text !== 'string') return '';
+    const clean = text.replace(/\s+/g, ' ').trim();
+    if (!clean) return '';
+
+    const sentences = clean
+        .split(/(?<=[.!?])\s+/)
+        .map(s => s.trim())
+        .filter(s => s.length > 20);
+
+    if (sentences.length === 0) {
+        return clean.substring(0, 400);
+    }
+    if (sentences.length <= maxSentences) {
+        return sentences.join(' ');
+    }
+
+    // Score sentences by word frequency (simple extractive ranking)
+    const wordFreq = {};
+    sentences.forEach(s => {
+        s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).forEach(w => {
+            if (w.length > 3) wordFreq[w] = (wordFreq[w] || 0) + 1;
+        });
+    });
+
+    const score = s => {
+        const words = s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/);
+        const total = words.reduce((sum, w) => sum + (wordFreq[w] || 0), 0);
+        return total / Math.max(1, words.length);
+    };
+
+    const ranked = sentences
+        .map((s, i) => ({ s, i, score: score(s) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, maxSentences)
+        .sort((a, b) => a.i - b.i);
+
+    return ranked.map(r => r.s).join(' ');
+}
+
+/**
  * Ease functions
  */
 export const easing = {

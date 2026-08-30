@@ -43,6 +43,19 @@ class StateManager {
                 executionHistory: [],
                 pendingConfirmation: null
             },
+            // Task/Agent state (Part 4)
+            task: {
+                active: false,
+                goal: '',
+                status: 'idle', // idle | planning | running | waiting_confirmation | completed | failed | cancelled
+                plan: [],       // [{ id, label, skill, action, risk, status, result }]
+                currentStepIndex: -1,
+                currentAction: '',
+                progress: 0,
+                result: null,
+                error: null,
+                updatedAt: null
+            },
             conversation: [],
             lastReadDocument: null
         };
@@ -229,6 +242,42 @@ class StateManager {
     clearSkillState() {
         this._state.skill.currentSkill = null;
         this._notify('skill', this._state.skill);
+    }
+
+    // ============ TASK / AGENT STATE (Part 4) ============
+
+    getTask() {
+        // Return a deep clone so consumers can't mutate internal state directly
+        return JSON.parse(JSON.stringify(this._state.task));
+    }
+
+    setTask(updates) {
+        Object.assign(this._state.task, updates);
+        this._state.task.updatedAt = Date.now();
+        this._notify('task', this.getTask());
+    }
+
+    resetTask() {
+        this._state.task = {
+            active: false,
+            goal: '',
+            status: 'idle',
+            plan: [],
+            currentStepIndex: -1,
+            currentAction: '',
+            progress: 0,
+            result: null,
+            error: null,
+            updatedAt: null
+        };
+        this._notify('task', this.getTask());
+    }
+
+    updateTaskStep(stepIndex, patch) {
+        if (!this._state.task.plan[stepIndex]) return;
+        Object.assign(this._state.task.plan[stepIndex], patch);
+        this._state.task.updatedAt = Date.now();
+        this._notify('task', this.getTask());
     }
 }
 

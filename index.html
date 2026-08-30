@@ -70,7 +70,7 @@
         <div class="boot-container">
             <div class="boot-header">
                 <h2 class="boot-title">ALICE INITIALIZATION</h2>
-                <p class="boot-subtitle">System Boot Sequence v0.3.0</p>
+                <p class="boot-subtitle">System Boot Sequence v0.4.0</p>
             </div>
             
             <div class="boot-progress">
@@ -253,10 +253,31 @@
                 <div class="waveform-container">
                     <canvas class="waveform-canvas"></canvas>
                 </div>
+
+                <!-- Text Command Input (Part 4) -->
+                <form class="command-input-form" id="command-form">
+                    <input
+                        type="text"
+                        class="command-input"
+                        id="command-input"
+                        placeholder="Type a command… (e.g. research quantum computing, summarize it and create a document)"
+                        autocomplete="off"
+                        aria-label="Type a command"
+                    >
+                    <button type="submit" class="command-submit" aria-label="Send command">↵</button>
+                </form>
             </div>
             
-            <!-- Right Panel - Activity Log -->
+            <!-- Right Panel - Task Dashboard + Activity Log -->
             <div class="hud-right-panel">
+                <!-- Task Dashboard (Part 4) -->
+                <div class="hud-panel" id="task-panel">
+                    <div class="hud-panel-header">
+                        <span class="hud-panel-icon">▣</span>
+                        <span class="hud-panel-title">Task Dashboard</span>
+                    </div>
+                </div>
+
                 <div class="hud-panel">
                     <div class="hud-panel-header">
                         <span class="hud-panel-icon">◇</span>
@@ -276,7 +297,7 @@
                     
                     <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">
                         <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Version:</span> 0.3.0 GAMMA
+                            <span style="color: var(--text-secondary);">Version:</span> 0.4.0 DELTA
                         </div>
                         <div style="margin-bottom: 8px;">
                             <span style="color: var(--text-secondary);">Build:</span> 2026.08.30
@@ -284,6 +305,10 @@
                         <div style="margin-bottom: 8px;">
                             <span style="color: var(--text-secondary);">Skills:</span> 
                             <span style="color: var(--accent);">8 Active</span>
+                        </div>
+                        <div style="margin-bottom: 8px;">
+                            <span style="color: var(--text-secondary);">Agent:</span> 
+                            <span style="color: var(--accent);">Task Planner</span>
                         </div>
                         <div style="margin-bottom: 8px;">
                             <span style="color: var(--text-secondary);">Memory:</span> 
@@ -296,6 +321,27 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- ========================================
+         CONFIRMATION MODAL (Part 4)
+         ======================================== -->
+    <div id="confirmation-modal" aria-hidden="true" role="dialog" aria-modal="true">
+        <div class="confirmation-dialog">
+            <div class="confirmation-icon">⚠</div>
+            <h3 class="confirmation-title" data-confirm-title>Confirmation required</h3>
+            <p class="confirmation-message" data-confirm-message></p>
+            <p class="confirmation-action" data-confirm-action></p>
+            <div class="confirmation-actions">
+                <button class="confirm-btn approve" data-confirm="approve" type="button">
+                    <span>Approve</span>
+                </button>
+                <button class="confirm-btn cancel" data-confirm="cancel" type="button">
+                    <span>Cancel</span>
+                </button>
+            </div>
+            <p class="confirmation-hint">You can also say "approve" or "cancel".</p>
         </div>
     </div>
 
@@ -325,6 +371,12 @@
         <div class="debug-section">
             <div class="debug-label">Voice Test</div>
             <button id="voice-test-btn" class="debug-btn" style="width: 100%;">Test Wake Word</button>
+        </div>
+
+        <div class="debug-section">
+            <div class="debug-label">Agent Demos (Part 4)</div>
+            <button id="demo-research-btn" class="debug-btn" style="width: 100%; margin-bottom: 4px;">Demo: Research → Summarize → Document</button>
+            <button id="demo-confirm-btn" class="debug-btn" style="width: 100%;">Demo: Delete Note (confirmation)</button>
         </div>
         
         <div class="debug-section">

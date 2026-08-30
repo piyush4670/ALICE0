@@ -119,6 +119,65 @@ class SkillManager {
     }
 
     /**
+     * Public: find the best matching skill for a piece of text without
+     * executing anything. Used by the task planner to map sub-tasks to tools.
+     * Returns { skill, score } or { skill: null, score: 0 }.
+     */
+    matchSkill(text) {
+        const t = text.toLowerCase().trim();
+        let bestMatch = null;
+        let bestScore = 0;
+        for (const skill of this._skills.values()) {
+            const score = this._calculateMatchScore(t, skill);
+            if (score > bestScore) {
+                bestScore = score;
+                bestMatch = skill;
+            }
+        }
+        return {
+            skill: bestScore >= 0.3 ? bestMatch : null,
+            score: bestScore
+        };
+    }
+
+    /**
+     * Public: execute a specific skill by name (the planner has already
+     * decided which tool to use, so no pattern matching is needed here).
+     * Wraps execution with the same result normalization as process().
+     */
+    async executeByName(name, input, context = {}) {
+        const skill = this._skills.get(name);
+        if (!skill) {
+            return {
+                success: false,
+                error: `Skill "${name}" is not available`
+            };
+        }
+
+        state.logActivity(`Executing skill: ${skill.name}`, 'info');
+        state.setSkillState(skill.name, { pending: true });
+
+        try {
+            const result = await this._executeSkill(skill, input, context);
+            this._lastSkill = skill.name;
+            this._executionHistory.push({
+                skill: skill.name,
+                input: input,
+                result: result,
+                timestamp: Date.now()
+            });
+            return result;
+        } catch (e) {
+            state.logActivity(`Skill "${skill.name}" error: ${e.message}`, 'danger');
+            return {
+                success: false,
+                error: e.message || 'Skill execution failed',
+                skill: skill.name
+            };
+        }
+    }
+
+    /**
      * Find the best matching skill for input
      */
     _findSkill(text) {

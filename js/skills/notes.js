@@ -29,6 +29,18 @@ export const notes = {
      * Execute notes command
      */
     execute(input, context = {}) {
+        // Agent path: save prepared content directly (used by "save to notes" step)
+        if (context && context.action === 'create' && context.content !== undefined) {
+            const content = String(context.content);
+            const title = content.split(' ').slice(0, 5).join(' ') + (content.length > 30 ? '...' : '');
+            const note = memory.addNote(title, content);
+            return {
+                success: true,
+                result: `I've saved a note: "${title}"`,
+                note
+            };
+        }
+
         const text = input.toLowerCase();
         
         // Determine action

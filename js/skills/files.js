@@ -23,6 +23,12 @@ export const files = {
      * Execute file command
      */
     execute(input, context = {}) {
+        // Agent path: the planner has already prepared the document content.
+        // This is used by the "create document" step of a multi-step task.
+        if (context && context.content !== undefined) {
+            return this._createFileContent(context);
+        }
+
         const text = input.toLowerCase();
         
         if (text.match(/read|open/i)) {
@@ -40,6 +46,25 @@ export const files = {
         return {
             success: false,
             error: 'I\'m not sure what you want me to do with files'
+        };
+    },
+
+    /**
+     * Create a file from already-prepared content (used by the agent).
+     */
+    _createFileContent({ content, filename }) {
+        const name = filename || 'alice-document.txt';
+        if (!content || !String(content).trim()) {
+            return {
+                success: false,
+                error: 'There is no content to write to the document.'
+            };
+        }
+        this._downloadFile(name, String(content));
+        return {
+            success: true,
+            result: `Created document "${name}". The download should start automatically.`,
+            filename: name
         };
     },
 

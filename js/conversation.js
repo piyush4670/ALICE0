@@ -10,6 +10,8 @@ import { stt } from './stt.js';
 import { tts } from './tts.js';
 import { skillManager } from './skillManager.js';
 import { memory } from './memory.js';
+import { agent } from './agent.js';
+import { permissions } from './permissions.js';
 
 class ConversationManager {
     constructor() {
@@ -24,8 +26,12 @@ class ConversationManager {
         this._onWakeWord = null;
         this._onSpeechResult = null;
         this._onAliceSpeak = null;
+
+        // Confirmation listening (Part 4)
+        this._confirmationActive = false;
         
         this._setupCallbacks();
+        this._setupPermissionCallbacks();
     }
 
     /**
@@ -66,6 +72,25 @@ class ConversationManager {
     }
 
     /**
+     * Wire up the permission system: when a confirmation prompt opens,
+     * speak the prompt and prepare to listen for the user's answer.
+     */
+    _setupPermissionCallbacks() {
+        permissions.onPrompt((meta) => {
+            this._confirmationActive = true;
+            const prompt = `${meta.title}. ${meta.message} Say "approve" to continue, or "cancel" to stop.`;
+            this._speakResponse(prompt, 'confirmation');
+        });
+
+        permissions.onResolved(() => {
+            this._confirmationActive = false;
+            if (this._isListening) {
+                stt.stop();
+            }
+        });
+    }
+
+    /**
      * Setup internal callbacks
      */
     _setupCallbacks() {
@@ -100,6 +125,11 @@ class ConversationManager {
         });
 
         tts.onEnd(() => {
+            // If a confirmation is pending, listen for "approve"/"cancel"
+            if (this._confirmationActive) {
+                this._startListening();
+                return;
+            }
             if (!this._isListening) {
                 state.set('aliceState', CONFIG.states.IDLE);
             }
@@ -234,8 +264,26 @@ class ConversationManager {
 
         // If we have final result, process it
         if (result.isComplete && result.final) {
+            // If we're awaiting a confirmation answer, route the speech there
+            if (this._confirmationActive) {
+                this._handleConfirmationSpeech(result.final);
+                return;
+            }
             this._processCommand(result.final);
         }
+    }
+
+    /**
+     * Route recognized speech while a confirmation is pending.
+     * Only "approve"/"cancel" answers are accepted; anything else re-prompts.
+     */
+    _handleConfirmationSpeech(text) {
+        const handled = permissions.answerVoice(text);
+        if (handled === null) {
+            this._speakResponse('Please say "approve" or "cancel".', 'confirmation');
+            this._startListening();
+        }
+        // else: permissions.onResolved already fired and stopped listening
     }
 
     /**
@@ -266,23 +314,93 @@ class ConversationManager {
     }
 
     /**
+     * Public entry point for text-based commands (used by the HUD command
+     * input and debug/demo triggers). Routes through the same pipeline as
+     * voice commands.
+     */
+    processText(text) {
+        if (!text || !text.trim()) return;
+        this._processCommand(text.trim());
+    }
+
+    /**
      * Process command through skill system
      */
     async _processWithSkills(text) {
         state.set('aliceState', CONFIG.states.UNDERSTANDING);
         
-        // Try skill system first
-        const skillResult = await skillManager.process(text);
-        
-        if (skillResult.success) {
-            state.setSkillState(skillResult.skill || 'unknown', skillResult);
+        // Try the agent first for multi-step goals (Part 4).
+        // The agent returns null when the input is not a multi-step task,
+        // in which case we fall back to the single-skill path unchanged.
+        const agentResult = await agent.process(text, {
+            speak: (t) => this._speakResponse(t, 'agent')
+        });
+
+        if (agentResult) {
+            state.set('aliceState', CONFIG.states.COMPLETING);
+            return { response: agentResult.response, skill: 'agent' };
+        }
+
+        // Single-skill path, with a confirmation gate for sensitive actions
+        const match = skillManager.matchSkill(text);
+
+        if (match.skill) {
+            const step = {
+                skill: match.skill.name,
+                action: text,
+                label: match.skill.name,
+                risk: 'safe'
+            };
+
+            const { requiresConfirmation, reason } = permissions.evaluateStep(step);
+            if (requiresConfirmation) {
+                state.set('aliceState', CONFIG.states.WAITING);
+                state.setTask({
+                    active: true,
+                    goal: text,
+                    status: 'waiting_confirmation',
+                    currentAction: text
+                });
+
+                const approved = await permissions.requestConfirmation({
+                    title: 'Confirmation required',
+                    message: `This is a ${reason}.`,
+                    action: text
+                });
+                state.set('aliceState', CONFIG.states.EXECUTING);
+
+                if (!approved) {
+                    state.setTask({
+                        active: false,
+                        status: 'cancelled',
+                        currentAction: 'Cancelled',
+                        result: 'Task cancelled by user.'
+                    });
+                    state.logActivity('Action cancelled by user', 'warning');
+                    return { response: 'Cancelled. Nothing was changed.', skill: 'confirmation' };
+                }
+
+                state.setTask({ status: 'running', currentAction: text });
+            }
+
+            const skillResult = await skillManager.executeByName(match.skill.name, text, {});
             
-            // Handle interactive results
-            if (skillResult.interactive) {
-                return { response: skillResult.result, skill: 'interaction' };
+            // The single-skill confirmation flow is complete — clear the
+            // temporary dashboard state (the result is spoken + logged).
+            if (requiresConfirmation) state.resetTask();
+
+            if (skillResult.success) {
+                state.setSkillState(match.skill.name, skillResult);
+                
+                // Handle interactive results
+                if (skillResult.interactive) {
+                    return { response: skillResult.result, skill: 'interaction' };
+                }
+                
+                return { response: skillResult.result, skill: match.skill.name };
             }
             
-            return { response: skillResult.result, skill: skillManager.getLastSkill() };
+            return { response: skillResult.error || 'Something went wrong.', skill: match.skill.name };
         }
         
         // Fall back to basic responses

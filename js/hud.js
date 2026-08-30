@@ -7,6 +7,8 @@ import { CONFIG } from './config.js';
 import { state } from './state.js';
 import { audioManager } from './audio.js';
 import { formatTime, formatDate } from './utils.js';
+import { taskDashboard } from './taskDashboard.js';
+import { permissions } from './permissions.js';
 
 class ALICEHUD {
     constructor() {
@@ -24,6 +26,8 @@ class ALICEHUD {
         this._setupStateSubscription();
         this._setupVoiceUI();
         this._setupSkillUI();
+        this._setupTaskDashboard();
+        this._setupConfirmationModal();
         this._startRenderLoop();
         
         // Update time and date
@@ -232,6 +236,20 @@ class ALICEHUD {
         }
     }
 
+    _setupTaskDashboard() {
+        const taskPanel = document.getElementById('task-panel');
+        if (taskPanel) {
+            taskDashboard.init(taskPanel);
+        }
+    }
+
+    _setupConfirmationModal() {
+        const modal = document.getElementById('confirmation-modal');
+        if (modal) {
+            permissions.attachModal(modal);
+        }
+    }
+
     _updateVoiceStatus(voiceState) {
         const voiceStatus = this._hudElement?.querySelector('.voice-status');
         if (!voiceStatus) return;
@@ -349,7 +367,9 @@ class ALICEHUD {
             EXECUTING: 'Executing',
             UNDERSTANDING: 'Understanding',
             SELECTING_TOOL: 'Selecting Tool',
-            COMPLETING: 'Completing'
+            COMPLETING: 'Completing',
+            PLANNING: 'Planning',
+            WAITING: 'Awaiting Input'
         };
         return labels[state] || state;
     }
