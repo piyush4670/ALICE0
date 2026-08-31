@@ -6,6 +6,7 @@
  * Skills can be individually enabled/disabled by the user.
  */
 import { state } from './state.js';
+import { permissions } from './permissions.js';
 import { calculator } from './skills/calculator.js';
 import { websearch } from './skills/websearch.js';
 import { notes } from './skills/notes.js';
@@ -78,7 +79,28 @@ class SkillManager {
         if (skill.inputs !== undefined && !Array.isArray(skill.inputs)) {
             errors.push('inputs must be an array');
         }
+        // Action-level permission metadata (used by the permission gateway):
+        // sensitiveActions — input patterns for sub-actions requiring
+        // confirmation; safeActions — read-only exemptions for skills whose
+        // overall risk is 'sensitive'
+        if (skill.sensitiveActions !== undefined && !this._isValidActionList(skill.sensitiveActions)) {
+            errors.push('sensitiveActions must be an array of { pattern } entries');
+        }
+        if (skill.safeActions !== undefined && !this._isValidActionList(skill.safeActions)) {
+            errors.push('safeActions must be an array of { pattern } entries');
+        }
         return { valid: errors.length === 0, errors };
+    }
+
+    /**
+     * Action metadata lists must be arrays of objects carrying a testable
+     * pattern (an optional `reason` string is shown in confirmations).
+     */
+    _isValidActionList(list) {
+        return Array.isArray(list) && list.every(a =>
+            a && typeof a === 'object' &&
+            a.pattern && typeof a.pattern.test === 'function'
+        );
     }
 
     /**
@@ -155,13 +177,13 @@ class SkillManager {
      */
     async process(input, context = {}) {
         const text = input.toLowerCase().trim();
-        
+
         state.logActivity(`Processing: "${input}"`, 'info');
         state.set('aliceState', 'UNDERSTANDING');
 
         // Find matching skill
         const skill = this._findSkill(text);
-        
+
         if (!skill) {
             return {
                 success: false,
@@ -170,36 +192,9 @@ class SkillManager {
             };
         }
 
-        state.logActivity(`Selected skill: ${skill.name}`, 'info');
-        state.set('aliceState', 'SELECTING_TOOL');
-
-        // Execute the skill
-        state.set('aliceState', 'EXECUTING');
-        
-        try {
-            const result = await this._executeSkill(skill, input, context);
-            
-            this._lastSkill = skill.name;
-            this._executionHistory.push({
-                skill: skill.name,
-                input: input,
-                result: result,
-                timestamp: Date.now()
-            });
-
-            state.set('aliceState', 'COMPLETING');
-            
-            return result;
-            
-        } catch (e) {
-            state.logActivity(`Skill execution error: ${e.message}`, 'danger');
-            state.set('aliceState', 'IDLE');
-            
-            return {
-                success: false,
-                error: `I encountered an error: ${e.message}`
-            };
-        }
+        // Route through executeByName so the permission gateway is always
+        // applied — direct execution here would bypass the boundary.
+        return this.executeByName(skill.name, input, context);
     }
 
     /**
@@ -228,19 +223,49 @@ class SkillManager {
      * Public: execute a specific skill by name (the planner has already
      * decided which tool to use, so no pattern matching is needed here).
      * Wraps execution with the same result normalization as process().
+     *
+     * This is the ONE authoritative permission boundary for skill
+     * execution: immediately before the skill runs, the permission
+     * gateway decides ALLOW / DENY / CONFIRM. Every caller — agent,
+     * conversation loop, or direct API use — passes through the same
+     * check, so no path can bypass it.
      */
     async executeByName(name, input, context = {}) {
         const skill = this._skills.get(name);
         if (!skill) {
             return {
                 success: false,
-                error: `Skill "${name}" is not available`
+                error: `Skill "${name}" is not available`,
+                cancelled: true,
+                permission: { decision: 'unavailable', skill: name, reason: 'unknown skill' }
             };
         }
         if (!this.isEnabled(name)) {
             return {
                 success: false,
-                error: `Skill "${name}" is currently disabled. You can re-enable it in Settings.`
+                error: `Skill "${name}" is currently disabled. You can re-enable it in Settings.`,
+                cancelled: true,
+                permission: { decision: 'unavailable', skill: name, reason: 'skill disabled' }
+            };
+        }
+
+        // ---- Permission gateway (centralized enforcement) ----
+        const verdict = await permissions.gate(skill, input, context);
+        if (!verdict.allowed) {
+            state.logActivity(
+                `Permission ${verdict.decision}: ${skill.name} — ${verdict.reason}`,
+                'warning'
+            );
+            return {
+                success: false,
+                cancelled: true,
+                error: verdict.message,
+                skill: skill.name,
+                permission: {
+                    decision: verdict.decision,
+                    skill: skill.name,
+                    reason: verdict.reason
+                }
             };
         }
 

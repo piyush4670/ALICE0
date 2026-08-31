@@ -14,6 +14,16 @@
  *   - pauses for user confirmation before sensitive/irreversible steps
  *   - exposes only high-level progress to the HUD (no hidden reasoning)
  *
+ * Execution boundaries (hardened):
+ *   - CONFIG.agent.maxSteps is a hard limit on how many steps may execute,
+ *     enforced both when the plan is validated and inside the execution
+ *     loop itself — a malformed or oversized plan can never bypass it
+ *   - retries per step are capped by CONFIG.agent.maxRetries regardless
+ *     of what a step requests, so no retry loop can run unbounded
+ *   - only one execution loop runs at a time (re-entrant requests decline)
+ *   - unexpected exceptions from skills are normalized into safe failure
+ *     results and always terminate the task cleanly
+ *
  * It runs fully asynchronously (await/yield between steps), so the UI
  * stays responsive during longer tasks.
  */
@@ -21,7 +31,6 @@ import { CONFIG } from './config.js';
 import { state } from './state.js';
 import { taskPlanner } from './taskPlanner.js';
 import { skillManager } from './skillManager.js';
-import { permissions } from './permissions.js';
 import { memory } from './memory.js';
 import { summarizeText, delay } from './utils.js';
 
@@ -31,6 +40,55 @@ class Agent {
         this._goal = '';
         this._speak = null;
         this._cancelled = false;
+        this._running = false;  // re-entrancy guard for the execution loop
+    }
+
+    // ------------------------------------------------------------------
+    // Hard boundaries (CONFIG.agent is the single source of truth)
+    // ------------------------------------------------------------------
+
+    /** Maximum number of steps any plan may contain / the loop may execute. */
+    _stepLimit() {
+        const n = CONFIG.agent && CONFIG.agent.maxSteps;
+        return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+    }
+
+    /** Maximum retries for a single step, whatever the step itself requests. */
+    _retryLimit() {
+        const n = CONFIG.agent && CONFIG.agent.maxRetries;
+        return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+    }
+
+    /** Normalize a requested retry/attempt count to a safe non-negative int. */
+    _toCount(value) {
+        const n = Number(value);
+        return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
+    }
+
+    /**
+     * Validate a plan before executing anything. It must be a non-empty
+     * array, within the hard step limit, and every step must be an object
+     * bound to a skill. Malformed or oversized plans are rejected up front
+     * so they can never reach the execution loop.
+     */
+    _validatePlan(plan) {
+        if (!Array.isArray(plan) || plan.length === 0) {
+            return { valid: false, reason: 'the plan is empty or malformed' };
+        }
+        const limit = this._stepLimit();
+        if (plan.length > limit) {
+            return { valid: false, reason: `the plan needs ${plan.length} steps but the hard limit is ${limit}` };
+        }
+        for (let i = 0; i < plan.length; i++) {
+            const step = plan[i];
+            if (!step || typeof step !== 'object' || Array.isArray(step)) {
+                return { valid: false, reason: `step ${i + 1} is malformed` };
+            }
+            if (typeof step.skill !== 'string' || step.skill.length === 0) {
+                return { valid: false, reason: `step ${i + 1} is not bound to a skill` };
+            }
+        }
+        return { valid: true, reason: null };
     }
 
     /**
@@ -41,15 +99,44 @@ class Agent {
     async process(goal, { speak = null } = {}) {
         if (!CONFIG.agent.enabled) return null;
 
+        // Never run two execution loops at once over the shared blackboard —
+        // this also prevents recursive agent runs from looping indefinitely.
+        if (this._running) {
+            state.logActivity('Agent is already running a task — request declined', 'warning');
+            return null;
+        }
+
         const analysis = taskPlanner.analyze(goal);
-        if (!analysis.isMultiStep || analysis.plan.length === 0) {
+        if (!analysis || !analysis.isMultiStep || !Array.isArray(analysis.plan) || analysis.plan.length === 0) {
             return null; // not a multi-step task — let the single-skill path handle it
         }
 
+        // Hard boundary, enforced independently of the planner: a malformed
+        // or oversized plan is rejected before anything executes.
+        const validation = this._validatePlan(analysis.plan);
+        if (!validation.valid) {
+            state.logActivity(`Task rejected before execution: ${validation.reason}`, 'warning');
+            return null;
+        }
+
+        this._running = true;
+        try {
+            return await this._executePlan(analysis, speak);
+        } finally {
+            this._running = false;
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // The execution loop (PLAN → EXECUTE → OBSERVE → DECIDE → COMPLETE)
+    // ------------------------------------------------------------------
+    async _executePlan(analysis, speak) {
         this._goal = analysis.goal;
         this._speak = speak;
         this._cancelled = false;
         this._context = { _goal: analysis.goal };
+
+        const stepLimit = this._stepLimit();
 
         // ---- PLAN (visible to the user as the task list) ----
         const plan = analysis.plan.map((step, i) => ({
@@ -77,99 +164,129 @@ class Agent {
         }
 
         // ---- EXECUTE / OBSERVE / DECIDE ----
-        for (let i = 0; i < plan.length; i++) {
-            if (this._cancelled) break;
+        // `i < stepLimit` is the hard execution boundary: even if the plan
+        // were somehow malformed or mutated after validation, the loop can
+        // never run more steps than CONFIG.agent.maxSteps.
+        let executed = 0;
+        let currentStep = plan[0];
+        try {
+            for (let i = 0; i < plan.length && i < stepLimit; i++) {
+                if (this._cancelled) break;
 
-            const step = plan[i];
-            state.set('aliceState', CONFIG.states.EXECUTING);
-            state.setTask({
-                currentStepIndex: i,
-                currentAction: step.label,
-                status: 'running',
-                progress: Math.round((i / plan.length) * 100)
-            });
-            state.updateTaskStep(i, { status: 'running' });
+                const step = plan[i];
+                currentStep = step;
+                state.set('aliceState', CONFIG.states.EXECUTING);
+                state.setTask({
+                    currentStepIndex: i,
+                    currentAction: step.label,
+                    status: 'running',
+                    progress: Math.round((i / plan.length) * 100)
+                });
+                state.updateTaskStep(i, { status: 'running' });
 
-            // Sensitive actions require explicit user confirmation
-            const { requiresConfirmation, reason } = permissions.evaluateStep(step);
-            if (requiresConfirmation) {
-                const approved = await this._confirmStep(step, reason);
-                if (!approved) {
+                // Permission enforcement is centralized: the gateway runs
+                // inside skillManager.executeByName() immediately before the
+                // skill executes, so every step passes the same boundary.
+                const result = await this._executeWithRecovery(step);
+
+                // A user denial is final: do not retry, do not try
+                // alternatives, and cancel the task cleanly.
+                if (result && result.permission && result.permission.decision === 'denied') {
                     return this._cancel(step);
                 }
+
+                if (!result || !result.success) {
+                    // DECIDE: cannot continue — report clearly and stop
+                    return this._fail(step, (result && result.error) || 'step failed');
+                }
+
+                // OBSERVE: store result on the shared blackboard for later steps
+                this._context[step.contextKey || `step_${i}`] = result;
+
+                state.updateTaskStep(i, { status: 'completed', result: result.result || '' });
+                state.setTask({ progress: Math.round(((i + 1) / plan.length) * 100) });
+
+                state.logActivity(`Step complete: ${step.label}`, 'success');
+                if (this._speak && CONFIG.agent.speakProgress && plan.length > 1) {
+                    this._speak(this._stepDoneAnnouncement(step));
+                }
+
+                // Yield to the event loop so the UI stays responsive
+                await delay(CONFIG.agent.stepDelay);
+                executed++;
             }
-
-            const result = await this._executeWithRecovery(step);
-
-            if (!result.success) {
-                // DECIDE: cannot continue — report clearly and stop
-                return this._fail(step, result.error);
-            }
-
-            // OBSERVE: store result on the shared blackboard for later steps
-            this._context[step.contextKey] = result;
-
-            state.updateTaskStep(i, { status: 'completed', result: result.result || '' });
-            state.setTask({ progress: Math.round(((i + 1) / plan.length) * 100) });
-
-            state.logActivity(`Step complete: ${step.label}`, 'success');
-            if (this._speak && CONFIG.agent.speakProgress && plan.length > 1) {
-                this._speak(this._stepDoneAnnouncement(step));
-            }
-
-            // Yield to the event loop so the UI stays responsive
-            await delay(CONFIG.agent.stepDelay);
+        } catch (e) {
+            // Any unexpected exception is normalized into a clean failure —
+            // it never escapes the agent and never leaves a task running.
+            const fallbackStep = (currentStep && typeof currentStep === 'object')
+                ? currentStep
+                : plan[0];
+            return this._fail(fallbackStep, (e && e.message) || 'unexpected execution error');
         }
 
         // ---- COMPLETE ----
+        if (this._cancelled) {
+            // A cancelled loop must never be reported as success
+            const lastStep = plan[Math.max(0, executed - 1)] || plan[0];
+            return this._cancel(lastStep);
+        }
+
+        if (executed < plan.length) {
+            // The hard step boundary stopped the loop before the plan
+            // finished — terminate cleanly instead of claiming success.
+            const step = plan[executed] || plan[0];
+            return this._fail(step, `the hard step limit (${stepLimit}) was reached`);
+        }
+
         return this._complete(plan);
-    }
-
-    // ------------------------------------------------------------------
-    // Confirmation
-    // ------------------------------------------------------------------
-    async _confirmStep(step, reason) {
-        state.set('aliceState', CONFIG.states.WAITING);
-        state.setTask({ status: 'waiting_confirmation', currentAction: `Confirm: ${step.label}` });
-
-        const message = `${step.label} — this is a ${reason}.`;
-
-        const approved = await permissions.requestConfirmation({
-            title: 'Confirmation required',
-            message,
-            action: step.label
-        });
-
-        state.set('aliceState', CONFIG.states.EXECUTING);
-        state.setTask({ status: 'running', currentAction: step.label });
-        return approved;
     }
 
     // ------------------------------------------------------------------
     // Execution with retry + alternative fallback
     // ------------------------------------------------------------------
     async _executeWithRecovery(step) {
-        const maxAttempts = (step.retries || 0) + 1;
+        // The retry budget is capped by CONFIG.agent.maxRetries no matter
+        // what the step requests — a step can never retry its way into an
+        // unbounded loop.
+        const maxAttempts = 1 + Math.min(this._toCount(step.retries), this._retryLimit());
         let lastError = null;
+
+        // Retry a private copy of the step so a failure or retry can never
+        // mutate the plan or bleed into other steps.
+        const stepSpec = { ...step };
 
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             if (attempt > 0) {
-                state.logActivity(`Retrying "${step.label}" (attempt ${attempt + 1})`, 'warning');
+                state.logActivity(`Retrying "${stepSpec.label}" (attempt ${attempt + 1})`, 'warning');
                 await delay(CONFIG.agent.retryDelay);
             }
-            const result = await this._executeStep(step);
+            const result = await this._executeStep(stepSpec);
             if (result && result.success) return result;
-            lastError = result?.error || 'step failed';
+
+            // A permission denial is never retried and never falls back to
+            // an alternative skill — the user said no.
+            if (result && result.permission && result.permission.decision === 'denied') {
+                return result;
+            }
+            lastError = (result && result.error) || 'step failed';
         }
 
-        // Alternative approach when available
-        for (const altSkill of (step.alternatives || [])) {
+        // Alternative approach when available (declared by the planner;
+        // bounded so even a malformed step cannot loop here)
+        const alternatives = Array.isArray(stepSpec.alternatives)
+            ? stepSpec.alternatives.slice(0, this._stepLimit())
+            : [];
+        for (const altSkill of alternatives) {
             state.logActivity(`Trying alternative approach: ${altSkill}`, 'info');
             try {
-                const altStep = { ...step, skill: altSkill, alternatives: [] };
+                const altStep = { ...stepSpec, skill: altSkill, alternatives: [] };
                 const altResult = await this._executeStep(altStep);
                 if (altResult && altResult.success) {
                     return { ...altResult, viaAlternative: true };
+                }
+                // A denied alternative is also final — stop immediately.
+                if (altResult && altResult.permission && altResult.permission.decision === 'denied') {
+                    return altResult;
                 }
             } catch (e) {
                 // fall through to next alternative
@@ -180,28 +297,47 @@ class Agent {
     }
 
     async _executeStep(step) {
-        // Internal "core" operations (no external skill)
-        if (step.skill === 'core') {
-            return this._executeCore(step);
+        try {
+            // Internal "core" operations (no external skill)
+            if (step.skill === 'core') {
+                return this._executeCore(step);
+            }
+
+            // Only known, enabled skills may execute. Invalid or disabled
+            // skill bindings fail the step safely without executing anything.
+            if (!skillManager.hasSkill(step.skill)) {
+                return { success: false, error: `Skill "${step.skill}" is not available` };
+            }
+            if (!skillManager.isEnabled(step.skill)) {
+                return { success: false, error: `Skill "${step.skill}" is currently disabled. You can re-enable it in Settings.` };
+            }
+
+            // Resolve the input: either literal text or a prior step's output
+            const rawInput = step.inputSource
+                ? this._extractText(this._context[step.inputSource])
+                : (step.input || '');
+
+            // Build skill context for skills that consume prepared content
+            let context = {};
+            if (step.skill === 'files' && step.action === 'create') {
+                context = {
+                    content: this._buildDocument(rawInput),
+                    filename: step.filename || 'alice-document.txt'
+                };
+            } else if (step.skill === 'notes' && step.action === 'create') {
+                context = { action: 'create', content: rawInput };
+            }
+
+            const result = await skillManager.executeByName(step.skill, rawInput, context);
+
+            // Normalize: even a skill returning nothing becomes a safe result
+            return (result && typeof result === 'object')
+                ? result
+                : { success: false, error: `Skill "${step.skill}" produced no result` };
+        } catch (e) {
+            // Unexpected exceptions are normalized into a safe failure result
+            return { success: false, error: (e && e.message) || 'unexpected skill execution error' };
         }
-
-        // Resolve the input: either literal text or a prior step's output
-        const rawInput = step.inputSource
-            ? this._extractText(this._context[step.inputSource])
-            : (step.input || '');
-
-        // Build skill context for skills that consume prepared content
-        let context = {};
-        if (step.skill === 'files' && step.action === 'create') {
-            context = {
-                content: this._buildDocument(rawInput),
-                filename: step.filename || 'alice-document.txt'
-            };
-        } else if (step.skill === 'notes' && step.action === 'create') {
-            context = { action: 'create', content: rawInput };
-        }
-
-        return skillManager.executeByName(step.skill, rawInput, context);
     }
 
     _executeCore(step) {

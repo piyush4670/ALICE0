@@ -66,14 +66,14 @@ class ALICEApp {
         const authScreen = this._screens.auth;
         if (!authScreen) return;
 
+        const form = authScreen.querySelector('.auth-form');
         const input = authScreen.querySelector('.auth-input');
-        const button = authScreen.querySelector('.auth-button');
         const pinDots = authScreen.querySelectorAll('.pin-dot');
 
         // Input handling
         input?.addEventListener('input', (e) => {
             const value = e.target.value;
-            
+
             // Update pin dots
             pinDots.forEach((dot, index) => {
                 if (index < value.length) {
@@ -90,21 +90,19 @@ class ALICEApp {
             }
         });
 
-        // Enter key submission
-        input?.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                button?.click();
-            }
-        });
+        // Submission (covers both the Access System button and Enter).
+        // preventDefault() stops the browser's native form submission,
+        // which would otherwise navigate/reload the page and abort the
+        // in-flight verification.
+        form?.addEventListener('submit', async (e) => {
+            e.preventDefault();
 
-        // Button click
-        button?.addEventListener('click', async () => {
             if (auth.isLocked()) {
                 return;
             }
 
             const pin = input?.value || '';
-            
+
             if (pin.length === 0) {
                 const status = authScreen.querySelector('.auth-status');
                 if (status) {
@@ -115,7 +113,7 @@ class ALICEApp {
             }
 
             const result = await auth.authenticate(pin, authScreen);
-            
+
             if (result.success) {
                 await delay(500);
                 this._startBootSequence();

@@ -3,11 +3,15 @@
  * ------------------------------------------------------------------
  * Talks to the provider-agnostic Integrations Layer (integrations.js),
  * never to a specific hardware vendor. Lists devices, reads sensor values,
- * and controls lights. On/off/set operations on devices are treated as
- * sensitive (they act on the outside world) and require confirmation.
+ * and controls lights.
+ *
+ * Permission enforcement is centralized: this skill declares itself
+ * risk 'sensitive' and lists its read-only dispatches as safeActions, so
+ * the permission gateway (skillManager.executeByName → permissions.gate)
+ * confirms control operations (on/off/set) and lets reads through. The
+ * skill itself never prompts.
  */
 import { state } from '../state.js';
-import { permissions } from '../permissions.js';
 import { integrations } from '../integrations.js';
 
 export const iot = {
@@ -19,6 +23,12 @@ export const iot = {
         { name: 'device', type: 'string', description: 'Device to act on' }
     ],
     actions: ['list', 'read', 'on', 'off', 'set'],
+    // Read-only exemptions from the sensitive-skill default: listing
+    // devices / reading sensors does not act on the outside world.
+    safeActions: [
+        { pattern: /list|show|what\s+(?:devices|lights|sensors)/i, reason: 'lists connected devices' },
+        { pattern: /read|check|temperature|reading/i, reason: 'reads a sensor value' }
+    ],
     patterns: [
         /(?:list|show)\s+(?:my\s+)?(?:devices|smart\s+devices|lights|sensors)/i,
         /what\s+(?:devices|lights|sensors)\s+(?:do\s+i|are\s+there|are\s+available)/i,
@@ -70,7 +80,7 @@ export const iot = {
         return integrations.invoke(match.id, 'getValue');
     },
 
-    async _setLevel(input) {
+    _setLevel(input) {
         const levelMatch = input.match(/(\d{1,3})\s*(?:%|percent)?/);
         if (!levelMatch) return { success: false, error: 'What brightness level (e.g. 50%)?' };
         const level = parseInt(levelMatch[1], 10);
@@ -79,27 +89,13 @@ export const iot = {
         const target = lights.find(l => input.includes(l.name.toLowerCase())) || lights[0];
         if (!target) return { success: true, result: 'No lights are connected.' };
 
-        const approved = await permissions.requestConfirmation({
-            title: 'Control device',
-            message: `Set ${target.name} to ${level}% brightness.`,
-            action: `Set ${target.name} brightness`
-        });
-        if (!approved) return { success: false, error: 'Cancelled — device unchanged.' };
-
         return integrations.invoke(target.id, 'setLevel', level);
     },
 
-    async _toggle(input, off) {
+    _toggle(input, off) {
         const lights = integrations.findDevices('light');
         const target = lights.find(l => input.includes(l.name.toLowerCase())) || lights[0];
         if (!target) return { success: true, result: 'No lights are connected.' };
-
-        const approved = await permissions.requestConfirmation({
-            title: 'Control device',
-            message: `Turn ${target.name} ${off ? 'off' : 'on'}?`,
-            action: `Turn ${target.name} ${off ? 'off' : 'on'}`
-        });
-        if (!approved) return { success: false, error: 'Cancelled — device unchanged.' };
 
         return integrations.invoke(target.id, off ? 'off' : 'on');
     },

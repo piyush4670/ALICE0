@@ -341,53 +341,14 @@ class ConversationManager {
             return { response: agentResult.response, skill: 'agent' };
         }
 
-        // Single-skill path, with a confirmation gate for sensitive actions
+        // Single-skill path. Permission enforcement is centralized: the
+        // gateway runs inside skillManager.executeByName() immediately
+        // before the skill executes, so this path cannot bypass (or
+        // duplicate) the confirmation flow.
         const match = skillManager.matchSkill(text);
 
         if (match.skill) {
-            const step = {
-                skill: match.skill.name,
-                action: text,
-                label: match.skill.name,
-                risk: 'safe'
-            };
-
-            const { requiresConfirmation, reason } = permissions.evaluateStep(step);
-            if (requiresConfirmation) {
-                state.set('aliceState', CONFIG.states.WAITING);
-                state.setTask({
-                    active: true,
-                    goal: text,
-                    status: 'waiting_confirmation',
-                    currentAction: text
-                });
-
-                const approved = await permissions.requestConfirmation({
-                    title: 'Confirmation required',
-                    message: `This is a ${reason}.`,
-                    action: text
-                });
-                state.set('aliceState', CONFIG.states.EXECUTING);
-
-                if (!approved) {
-                    state.setTask({
-                        active: false,
-                        status: 'cancelled',
-                        currentAction: 'Cancelled',
-                        result: 'Task cancelled by user.'
-                    });
-                    state.logActivity('Action cancelled by user', 'warning');
-                    return { response: 'Cancelled. Nothing was changed.', skill: 'confirmation' };
-                }
-
-                state.setTask({ status: 'running', currentAction: text });
-            }
-
             const skillResult = await skillManager.executeByName(match.skill.name, text, {});
-            
-            // The single-skill confirmation flow is complete — clear the
-            // temporary dashboard state (the result is spoken + logged).
-            if (requiresConfirmation) state.resetTask();
 
             if (skillResult.success) {
                 state.setSkillState(match.skill.name, skillResult);
@@ -400,6 +361,12 @@ class ConversationManager {
                 return { response: skillResult.result, skill: match.skill.name };
             }
             
+            // A permission denial (user cancelled the confirmation) is
+            // reported as a cancelled action — nothing was executed.
+            if (skillResult.permission && skillResult.permission.decision === 'denied') {
+                return { response: skillResult.error, skill: 'confirmation' };
+            }
+
             return { response: skillResult.error || 'Something went wrong.', skill: match.skill.name };
         }
         

@@ -8,14 +8,18 @@
  *   - suggest fixes for those detected issues
  *   - scaffold project files (downloads a small, ready-to-run template)
  *   - read logs (paste-in log text is parsed for errors/warnings)
- *   - "run" a command (simulated + confirmation-gated; real shell execution
- *     is out of scope for a client-side page and is explicitly not enabled)
+ *   - "run" a command (simulated; real shell execution is out of scope for
+ *     a client-side page and is explicitly not enabled)
  *
  * Never executes dangerous or destructive commands. Command execution is
- * simulated and always requires confirmation.
+ * simulated only.
+ *
+ * Permission enforcement is centralized: "run" is declared in
+ * sensitiveActions, so the permission gateway (skillManager.executeByName
+ * → permissions.gate) confirms it before this skill runs. The skill
+ * itself never prompts.
  */
 import { state } from '../state.js';
-import { permissions } from '../permissions.js';
 
 export const dev = {
     name: 'dev',
@@ -26,6 +30,11 @@ export const dev = {
         { name: 'code', type: 'text', description: 'Code or logs to analyze' }
     ],
     actions: ['explain', 'find-errors', 'scaffold', 'read-logs', 'run'],
+    // Simulated command execution still surfaces a confirmation so the
+    // user knows what will "run".
+    sensitiveActions: [
+        { pattern: /\brun\b/i, reason: 'runs a command (simulated — ALICE never executes real shell commands)' }
+    ],
     patterns: [
         /explain\s+(?:this\s+)?code/i,
         /(?:find|check|look\s+for)\s+(?:the\s+)?(?:bug|bugs|error|errors|issue|problem)/i,
@@ -123,20 +132,11 @@ export const dev = {
     },
 
     /**
-     * Simulated command execution (confirmation-gated, never real).
+     * Simulated command execution (never real). Confirmed upstream by the
+     * permission gateway ("run" is a sensitive action).
      */
-    async _runCommand(input) {
+    _runCommand(input) {
         const cmd = input.replace(/run\s+(?:the\s+)?(?:command|script|test|build)\s*/i, '').trim() || 'unknown command';
-
-        const approved = await permissions.requestConfirmation({
-            title: 'Run command (simulated)',
-            message: `ALICE runs commands in simulation only. This would run: "${cmd}".`,
-            action: `Simulate: ${cmd}`
-        });
-
-        if (!approved) {
-            return { success: false, error: 'Cancelled — nothing was run.' };
-        }
 
         return {
             success: true,
