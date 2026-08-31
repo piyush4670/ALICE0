@@ -31,7 +31,6 @@ import { CONFIG } from './config.js';
 import { state } from './state.js';
 import { taskPlanner } from './taskPlanner.js';
 import { skillManager } from './skillManager.js';
-import { permissions } from './permissions.js';
 import { memory } from './memory.js';
 import { summarizeText, delay } from './utils.js';
 
@@ -185,16 +184,16 @@ class Agent {
                 });
                 state.updateTaskStep(i, { status: 'running' });
 
-                // Sensitive actions require explicit user confirmation
-                const { requiresConfirmation, reason } = permissions.evaluateStep(step);
-                if (requiresConfirmation) {
-                    const approved = await this._confirmStep(step, reason);
-                    if (!approved) {
-                        return this._cancel(step);
-                    }
-                }
-
+                // Permission enforcement is centralized: the gateway runs
+                // inside skillManager.executeByName() immediately before the
+                // skill executes, so every step passes the same boundary.
                 const result = await this._executeWithRecovery(step);
+
+                // A user denial is final: do not retry, do not try
+                // alternatives, and cancel the task cleanly.
+                if (result && result.permission && result.permission.decision === 'denied') {
+                    return this._cancel(step);
+                }
 
                 if (!result || !result.success) {
                     // DECIDE: cannot continue — report clearly and stop
@@ -243,26 +242,6 @@ class Agent {
     }
 
     // ------------------------------------------------------------------
-    // Confirmation
-    // ------------------------------------------------------------------
-    async _confirmStep(step, reason) {
-        state.set('aliceState', CONFIG.states.WAITING);
-        state.setTask({ status: 'waiting_confirmation', currentAction: `Confirm: ${step.label}` });
-
-        const message = `${step.label} — this is a ${reason}.`;
-
-        const approved = await permissions.requestConfirmation({
-            title: 'Confirmation required',
-            message,
-            action: step.label
-        });
-
-        state.set('aliceState', CONFIG.states.EXECUTING);
-        state.setTask({ status: 'running', currentAction: step.label });
-        return approved;
-    }
-
-    // ------------------------------------------------------------------
     // Execution with retry + alternative fallback
     // ------------------------------------------------------------------
     async _executeWithRecovery(step) {
@@ -283,6 +262,12 @@ class Agent {
             }
             const result = await this._executeStep(stepSpec);
             if (result && result.success) return result;
+
+            // A permission denial is never retried and never falls back to
+            // an alternative skill — the user said no.
+            if (result && result.permission && result.permission.decision === 'denied') {
+                return result;
+            }
             lastError = (result && result.error) || 'step failed';
         }
 
@@ -298,6 +283,10 @@ class Agent {
                 const altResult = await this._executeStep(altStep);
                 if (altResult && altResult.success) {
                     return { ...altResult, viaAlternative: true };
+                }
+                // A denied alternative is also final — stop immediately.
+                if (altResult && altResult.permission && altResult.permission.decision === 'denied') {
+                    return altResult;
                 }
             } catch (e) {
                 // fall through to next alternative

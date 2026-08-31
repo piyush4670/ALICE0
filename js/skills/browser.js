@@ -2,7 +2,7 @@
  * Browser Assistance Skill (Part 5)
  * ------------------------------------------------------------------
  * Where technically and safely possible in a sandboxed browser:
- *   - open a website (requires confirmation — navigation away from ALICE)
+ *   - open a website (sensitive action — navigation away from ALICE)
  *   - read the *current* page's visible text and title
  *   - search the current page for a term
  *
@@ -11,9 +11,13 @@
  * exceed the "no unrestricted system access" rule, so it is intentionally
  * scoped to the safe, confirmable subset above. A dedicated companion
  * extension is the documented extension path (see manifest.permissions).
+ *
+ * Permission enforcement is centralized: opening a site is declared in
+ * sensitiveActions, so the permission gateway (skillManager.executeByName
+ * → permissions.gate) confirms it before this skill runs. The skill
+ * itself never prompts.
  */
 import { state } from '../state.js';
-import { permissions } from '../permissions.js';
 
 export const browserSkill = {
     name: 'browser',
@@ -24,6 +28,10 @@ export const browserSkill = {
         { name: 'url', type: 'string', description: 'Website to open' }
     ],
     actions: ['open', 'read', 'search-page'],
+    // Opening a site navigates away from ALICE → needs confirmation.
+    sensitiveActions: [
+        { pattern: /\b(?:open|go\s+to|visit|navigate)\b/i, reason: 'opens a website in a new tab' }
+    ],
     patterns: [
         /open\s+(?:the\s+)?(?:website|site|webpage|page|url)\s+(?:for\s+)?/i,
         /open\s+https?:\/\//i,
@@ -48,10 +56,10 @@ export const browserSkill = {
     },
 
     /**
-     * Open a website in a new tab. Requires explicit confirmation because it
-     * navigates away from ALICE.
+     * Open a website in a new tab. Confirmed upstream by the permission
+     * gateway (navigating away from ALICE is a sensitive action).
      */
-    async _openSite(input) {
+    _openSite(input) {
         let url = (input.match(/https?:\/\/[^\s]+/) || [null])[0];
         if (!url) {
             const m = input.replace(/open\s+(?:the\s+)?(?:website|site|webpage|page|url)\s+(?:for\s+)?/i, '')
@@ -65,16 +73,6 @@ export const browserSkill = {
 
         if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
         const displayHost = url.replace(/^https?:\/\//i, '');
-
-        const approved = await permissions.requestConfirmation({
-            title: 'Open website',
-            message: `This will open "${displayHost}" in a new tab.`,
-            action: `Open ${url}`
-        });
-
-        if (!approved) {
-            return { success: false, error: 'Cancelled — no website was opened.' };
-        }
 
         window.open(url, '_blank', 'noopener');
         state.logActivity(`Opened website: ${displayHost}`, 'success');
