@@ -9,6 +9,7 @@
  * do any hidden "reasoning" — it only produces the high-level task list
  * that is shown in the HUD. Internal chain-of-thought is never exposed.
  */
+import { CONFIG } from './config.js';
 import { skillManager } from './skillManager.js';
 
 // Connectors that separate multiple sub-tasks in a single utterance
@@ -24,6 +25,18 @@ const INTENT = {
 };
 
 class TaskPlanner {
+    /**
+     * Hard limit on plan length, taken from CONFIG.agent.maxSteps. A goal
+     * that would need more steps than this is refused (not truncated):
+     * silently running only part of a longer request would surprise the
+     * user. The agent re-checks the same limit at execution time as a
+     * second boundary.
+     */
+    _maxPlanSteps() {
+        const n = CONFIG.agent && CONFIG.agent.maxSteps;
+        return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+    }
+
     /**
      * Analyze a goal. Returns:
      *   { isMultiStep, goal, plan }
@@ -43,18 +56,24 @@ class TaskPlanner {
             this._researchDocument
         ];
 
+        let plan = null;
         for (const recipe of recipes) {
-            const plan = recipe.call(this, text);
-            if (plan) return { isMultiStep: true, goal, plan };
+            plan = recipe.call(this, text);
+            if (plan) break;
         }
 
         // Generic fallback: split on connectors and map each clause to a skill.
-        const plan = this._splitAndMap(text);
-        if (plan && plan.length > 1) {
-            return { isMultiStep: true, goal, plan };
+        if (!plan) plan = this._splitAndMap(text);
+
+        // Enforce the hard step limit for EVERY generated plan (recipes and
+        // the connector splitter alike): an oversized plan is never emitted
+        // as runnable.
+        const maxSteps = this._maxPlanSteps();
+        if (!plan || plan.length <= 1 || plan.length > maxSteps) {
+            return { isMultiStep: false, goal, plan: [] };
         }
 
-        return { isMultiStep: false, goal, plan: [] };
+        return { isMultiStep: true, goal, plan };
     }
 
     // ----- Recipe helpers -------------------------------------------------
