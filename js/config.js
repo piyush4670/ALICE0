@@ -138,11 +138,23 @@ export const CONFIG = {
         buildDate: '2026-08-30'
     },
 
+    // AI Brain Architecture (Phase 6.2)
+    ai: {
+        enabled: true,
+        provider: 'mock',          // 'mock' | provider identifier
+        adapter: 'mock',           // 'mock' | adapter identifier
+        timeout: 5000,             // ms before timing out model generation
+        maxOutputSize: 10000,      // maximum characters in model output
+        maxSteps: 8,               // maximum planning steps allowed
+        fallbackEnabled: true,     // fall back to deterministic planner on model failure
+        temperature: 0.2           // sampling temperature
+    },
+
     // Interface placeholders for future features
     interfaces: {
         speechRecognition: 'Web Speech API', // Part 2: Implemented
         textToSpeech: 'Web Speech API', // Part 2: Implemented
-        aiBrain: null, // Part 4: Task Planner (deterministic, no hidden reasoning)
+        aiBrain: 'Model-Agnostic AI Brain', // Phase 6.2: Implemented
         memory: 'localStorage', // Part 3: Implemented
         tools: 'Skill System' // Part 3: Implemented
     }
@@ -161,3 +173,4 @@ Object.freeze(CONFIG.proactive);
 Object.freeze(CONFIG.settings);
 Object.freeze(CONFIG.integrations);
 Object.freeze(CONFIG.security);
+Object.freeze(CONFIG.ai);
