@@ -12,6 +12,7 @@ import { skillManager } from './skillManager.js';
 import { memory } from './memory.js';
 import { agent } from './agent.js';
 import { permissions } from './permissions.js';
+import { aiBrain } from './ai/aiBrain.js';
 
 class ConversationManager {
     constructor() {
@@ -328,8 +329,34 @@ class ConversationManager {
      */
     async _processWithSkills(text) {
         state.set('aliceState', CONFIG.states.UNDERSTANDING);
-        
-        // Try the agent first for multi-step goals (Part 4).
+
+        // 1. AI Brain pipeline (Phase 6.2)
+        // Proposes structured plans or responses. Untrusted actions pass through
+        // the Plan Validator before reaching the Agent.
+        if (CONFIG.ai?.enabled && aiBrain.isEnabled()) {
+            try {
+                const aiResult = await aiBrain.processRequest(text);
+                if (aiResult && aiResult.success) {
+                    if (aiResult.isMultiStep && Array.isArray(aiResult.plan) && aiResult.plan.length > 0) {
+                        // Pass validated plan to existing Agent
+                        const agentResult = await agent.executePlan(
+                            { isMultiStep: true, goal: aiResult.goal || text, plan: aiResult.plan },
+                            (t) => this._speakResponse(t, 'agent')
+                        );
+                        if (agentResult) {
+                            state.set('aliceState', CONFIG.states.COMPLETING);
+                            return { response: agentResult.response, skill: 'agent' };
+                        }
+                    } else if (aiResult.response) {
+                        return { response: aiResult.response, skill: 'ai' };
+                    }
+                }
+            } catch (e) {
+                state.logActivity(`AI Brain pipeline error: ${e.message}`, 'warning');
+            }
+        }
+
+        // 2. Deterministic Fallback: Try the agent first for multi-step goals (Part 4).
         // The agent returns null when the input is not a multi-step task,
         // in which case we fall back to the single-skill path unchanged.
         const agentResult = await agent.process(text, {

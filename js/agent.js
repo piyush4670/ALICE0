@@ -92,11 +92,12 @@ class Agent {
     }
 
     /**
-     * Attempt to handle `goal` as a multi-step task.
-     * Returns `null` if the goal is not multi-step (caller should fall back
-     * to the single-skill path). Otherwise returns { response, success }.
+     * Execute a pre-planned / validated multi-step task.
+     * @param {{ isMultiStep?: boolean, goal: string, plan: Array<Object> }} analysis
+     * @param {Function} [speak]
+     * @returns {Promise<{ response: string, success: boolean, context?: Object }|null>}
      */
-    async process(goal, { speak = null } = {}) {
+    async executePlan(analysis, speak = null) {
         if (!CONFIG.agent.enabled) return null;
 
         // Never run two execution loops at once over the shared blackboard —
@@ -106,12 +107,11 @@ class Agent {
             return null;
         }
 
-        const analysis = taskPlanner.analyze(goal);
-        if (!analysis || !analysis.isMultiStep || !Array.isArray(analysis.plan) || analysis.plan.length === 0) {
-            return null; // not a multi-step task — let the single-skill path handle it
+        if (!analysis || !Array.isArray(analysis.plan) || analysis.plan.length === 0) {
+            return null;
         }
 
-        // Hard boundary, enforced independently of the planner: a malformed
+        // Hard boundary, enforced independently: a malformed
         // or oversized plan is rejected before anything executes.
         const validation = this._validatePlan(analysis.plan);
         if (!validation.valid) {
@@ -125,6 +125,22 @@ class Agent {
         } finally {
             this._running = false;
         }
+    }
+
+    /**
+     * Attempt to handle `goal` as a multi-step task using the deterministic planner.
+     * Returns `null` if the goal is not multi-step (caller should fall back
+     * to the single-skill path). Otherwise returns { response, success }.
+     */
+    async process(goal, { speak = null } = {}) {
+        if (!CONFIG.agent.enabled) return null;
+
+        const analysis = taskPlanner.analyze(goal);
+        if (!analysis || !analysis.isMultiStep || !Array.isArray(analysis.plan) || analysis.plan.length === 0) {
+            return null; // not a multi-step task — let the single-skill path handle it
+        }
+
+        return this.executePlan(analysis, speak);
     }
 
     // ------------------------------------------------------------------
