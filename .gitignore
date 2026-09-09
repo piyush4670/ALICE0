@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Secrets — provider credentials are SERVER-SIDE ONLY and must never be
+# committed. The local AI gateway reads them from the process environment
+# (see docs/PHASE_6_3_3_REAL_PROVIDER.md). Values are never tracked here;
+# only the variable NAMES are documented.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.json
+secrets.local.*
+credentials.json
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.npm/
+coverage/
+.nyc_output/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

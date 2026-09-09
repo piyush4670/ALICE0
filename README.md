@@ -110,12 +110,13 @@ ALICE0/
 │       ├── dev.js          # Developer mode (NEW — Part 5)
 │       └── iot.js          # IoT device control (NEW — Part 5)
 ├── server/
-│   └── gateway.js          # Secure local AI gateway (Phase 6.3.1, credential boundary)
+│   └── gateway.js          # Secure local AI gateway (Phase 6.3.1–6.3.3, credential boundary)
 ├── tests/
 │   ├── agent.test.mjs      # Planner/agent/permissions (Part 4)
 │   ├── part5.test.mjs      # Part 5 feature tests
 │   ├── gateway.test.mjs    # Secure local gateway (Phase 6.3.1)
 │   ├── httpModelAdapter.test.mjs # HTTP model adapter (Phase 6.3.2)
+│   ├── realProvider.test.mjs     # Real provider connection (Phase 6.3.3)
 │   └── load.test.mjs       # Verifies all modules import cleanly
 └── README.md
 ```
@@ -135,9 +136,9 @@ ALICE0/
 
 ## ⚙️ Configuration / Environment Variables
 
-ALICE is fully client-side and requires **no environment variables** and **no
-API keys** to run. All configuration lives in `js/config.js` (`CONFIG`) and is
-frozen at runtime:
+The **browser app** is fully client-side and requires **no environment
+variables** and **no API keys** to run. All client configuration lives in
+`js/config.js` (`CONFIG`) and is frozen at runtime:
 
 | Setting | Where | Purpose |
 |---------|-------|---------|
@@ -147,13 +148,44 @@ frozen at runtime:
 | Proactive frequency | `CONFIG.proactive` | Suggestion interval + level |
 | Settings defaults | `CONFIG.settings.defaults` | Persisted user settings |
 | Log redaction | `CONFIG.security.redactPatterns` | Strips secrets from logs |
+| Gateway routing / limits | `CONFIG.ai.gateway` | Client-side routing only — **never** credentials |
 
 Runtime user settings (proactive level, feature toggles, per-skill enable/disable)
 are persisted in `localStorage` under `alice_settings`; memory/notes/reminders
 under `alice_memory`.
 
-> ⚠️ If you later add an LLM, search, or IoT provider that needs a key, keep it
-> **server-side** (or in a local proxy) and never commit it — see SECURITY.md.
+### Optional: local AI gateway (Phase 6.3.1 → 6.3.3)
+
+The default AI provider is a deterministic **mock**, so nothing above is
+required. To connect a **real** provider, start `server/gateway.js` and
+configure it with **server-side** environment variables. The browser never
+receives a key, a provider URL, or an `Authorization` header.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `AI_PROVIDER` | `mock` | `groq` \| `openrouter` \| `ollama` \| `mock` |
+| `AI_MODEL` | *(provider default)* | **Authoritative** upstream model |
+| `AI_API_KEY` / `GROQ_API_KEY` / `OPENROUTER_API_KEY` | *none* | Server-only provider credential |
+| `AI_ALLOWED_MODELS` | *none* | Server-side model allowlist |
+| `AI_ALLOW_CLIENT_MODEL` | *off* | Explicit opt-in before any client model is honoured |
+| `GATEWAY_PORT` / `GATEWAY_HOST` | `3001` / `127.0.0.1` | Loopback bind |
+| `LOCAL_TRUST_TOKEN` | *none* | Optional local trust token |
+
+```bash
+# Offline mock (default) — zero credentials, zero network
+node server/gateway.js
+
+# Real provider, model pinned server-side
+AI_PROVIDER=groq GROQ_API_KEY=... AI_MODEL=llama-3.3-70b-versatile node server/gateway.js
+```
+
+Full details — provider allowlist, model-selection policy, response
+normalization, error categories and the security model — are in
+[`docs/PHASE_6_3_3_REAL_PROVIDER.md`](./docs/PHASE_6_3_3_REAL_PROVIDER.md).
+
+> ⚠️ Provider keys are **server-side only**. Never commit them: `.env`,
+> `.env.*`, `*.key`, `*.pem` and `secrets.*` are git-ignored. Only variable
+> *names* are documented in this repository — see SECURITY.md.
 
 ## 🎤 Voice Commands
 
@@ -226,8 +258,15 @@ node tests/agent.test.mjs   # planner, agent loop, failure recovery, permissions
 node tests/part5.test.mjs   # Part 5: plugins, memory, settings, IoT, dev, security (34 checks)
 node tests/gateway.test.mjs # Phase 6.3.1 secure local AI gateway (44 checks)
 node tests/httpModelAdapter.test.mjs # Phase 6.3.2 HTTP model adapter (140 checks)
+node tests/realProvider.test.mjs     # Phase 6.3.3 real provider connection (201 checks)
 node tests/load.test.mjs    # verifies all 43 modules import without errors
+
+# or run every suite at once
+for t in tests/*.test.mjs; do echo "== $t"; node "$t" || exit 1; done
 ```
+
+All provider tests use **deterministic local mock upstream servers** on
+`127.0.0.1` — no suite makes a real Groq / OpenRouter / Ollama request.
 
 ## 🧠 How the Agent Works (Part 4)
 
