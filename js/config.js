@@ -141,13 +141,44 @@ export const CONFIG = {
     // AI Brain Architecture (Phase 6.2)
     ai: {
         enabled: true,
-        provider: 'mock',          // 'mock' | provider identifier
-        adapter: 'mock',           // 'mock' | adapter identifier
+        provider: 'mock',          // 'mock' | provider identifier (gateway-side concern)
+        adapter: 'mock',           // 'mock' | 'http' — 'mock' remains the default adapter
         timeout: 5000,             // ms before timing out model generation
         maxOutputSize: 10000,      // maximum characters in model output
         maxSteps: 8,               // maximum planning steps allowed
         fallbackEnabled: true,     // fall back to deterministic planner on model failure
-        temperature: 0.2           // sampling temperature
+        temperature: 0.2,          // sampling temperature
+
+        // Local AI gateway client configuration (Phase 6.3.2)
+        // --------------------------------------------------------------
+        // This block holds CLIENT-SIDE ROUTING AND LIMITS ONLY.
+        // It MUST NEVER contain provider API keys, provider secrets,
+        // bearer tokens, or upstream provider URLs. The local gateway is
+        // the only credential boundary (see docs/PHASE_6_3_1_GATEWAY.md).
+        gateway: {
+            // Empty string = resolve at runtime from the deployment:
+            //   process.env.AI_GATEWAY_URL  ▶  window.ALICE_GATEWAY_URL
+            //   <meta name="alice-gateway-url">  ▶  default same-origin path.
+            url: '',
+            // Appended when a configured URL contains only an origin
+            // (e.g. AI_GATEWAY_URL=http://127.0.0.1:8787).
+            path: '/api/ai/generate',
+            // ms before a gateway request is aborted (0/absent = CONFIG.ai.timeout)
+            timeout: 8000,
+            // Hard client-side cap on the gateway response body (bytes)
+            maxResponseBytes: 65536,
+            // Maximum prompt length accepted by the client (must stay within
+            // the gateway's own request limit)
+            maxPromptChars: 10000,
+            // Empty string = resolve at runtime from LOCAL_TRUST_TOKEN /
+            // window.ALICE_GATEWAY_TOKEN / <meta name="alice-gateway-token">.
+            // This is a LOCAL trust token, never a provider credential.
+            trustToken: '',
+            // Hosts the adapter is permitted to contact. Loopback is always
+            // allowed; the list only exists so a non-loopback local
+            // deployment can be enabled deliberately.
+            allowedHosts: ['127.0.0.1', 'localhost', '::1']
+        }
     },
 
     // Interface placeholders for future features
@@ -174,3 +205,4 @@ Object.freeze(CONFIG.settings);
 Object.freeze(CONFIG.integrations);
 Object.freeze(CONFIG.security);
 Object.freeze(CONFIG.ai);
+Object.freeze(CONFIG.ai.gateway);
