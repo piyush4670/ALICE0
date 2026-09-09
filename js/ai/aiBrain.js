@@ -12,6 +12,8 @@
  *      ↓
  *     AI Brain
  *      ↓
+ *     ModelAdapter  (MockAdapter | HttpModelAdapter → local gateway)
+ *      ↓
  *     Intent / Structured Plan
  *      ↓
  *     Plan Validator
@@ -40,20 +42,56 @@ import { CONFIG } from '../config.js';
 import { state } from '../state.js';
 import { ModelAdapter, AIValidationError } from './modelAdapter.js';
 import { MockAdapter } from './mockAdapter.js';
+import { HttpModelAdapter } from './httpModelAdapter.js';
 import { planValidator as defaultPlanValidator } from './planValidator.js';
 import { toolDiscovery as defaultToolDiscovery } from './toolDiscovery.js';
 import { memoryAdapter as defaultMemoryAdapter } from './memoryAdapter.js';
 import { contextBuilder as defaultContextBuilder } from './contextBuilder.js';
 
-class AIBrain {
+/**
+ * Adapter registry (Phase 6.3.2).
+ *
+ * Both adapters implement the same ModelAdapter abstraction:
+ *   - 'mock' : deterministic, zero-network offline adapter (DEFAULT)
+ *   - 'http' : HttpModelAdapter, talks only to the local ALICE gateway
+ *
+ * The registry only maps identifiers to constructors — it holds no
+ * credentials and performs no network I/O.
+ */
+const ADAPTER_FACTORIES = {
+    mock: (config = {}) => new MockAdapter(config),
+    http: (config = {}) => new HttpModelAdapter(config)
+};
+
+/**
+ * Create a model adapter by identifier.
+ * 'mock' remains the default: the HTTP adapter is available but is NOT
+ * wired as the default provider until a later phase flips CONFIG.ai.adapter.
+ *
+ * @param {string} [type] - 'mock' | 'http'
+ * @param {Object} [config] - Adapter-specific configuration
+ * @returns {ModelAdapter}
+ */
+export function createModelAdapter(type = CONFIG.ai?.adapter || 'mock', config = {}) {
+    const key = String(type || 'mock').toLowerCase();
+    const factory = ADAPTER_FACTORIES[key];
+    if (!factory) {
+        throw new Error(`Unknown model adapter "${type}". Available adapters: ${Object.keys(ADAPTER_FACTORIES).join(', ')}`);
+    }
+    return factory(config);
+}
+
+export class AIBrain {
     constructor({
-        adapter = new MockAdapter(),
+        adapter = null,
         validator = defaultPlanValidator,
         toolDiscovery = defaultToolDiscovery,
         memoryAdapter = defaultMemoryAdapter,
         contextBuilder = defaultContextBuilder
     } = {}) {
-        this._adapter = adapter;
+        // Defaults to the configured adapter (CONFIG.ai.adapter, currently
+        // 'mock'), so behaviour is unchanged while 'http' stays available.
+        this._adapter = adapter || createModelAdapter();
         this._validator = validator;
         this._toolDiscovery = toolDiscovery;
         this._memoryAdapter = memoryAdapter;
@@ -89,13 +127,36 @@ class AIBrain {
     }
 
     /**
-     * Set a new model adapter.
+     * Set a new model adapter (MockAdapter or HttpModelAdapter).
      */
     setAdapter(adapter) {
         if (!(adapter instanceof ModelAdapter)) {
             throw new Error('Adapter must inherit from ModelAdapter');
         }
         this._adapter = adapter;
+    }
+
+    /**
+     * Create an adapter by identifier without installing it.
+     * @param {string} [type] - 'mock' | 'http'
+     * @param {Object} [config]
+     */
+    createAdapter(type, config = {}) {
+        return createModelAdapter(type, config);
+    }
+
+    /**
+     * Identifiers supported by the adapter registry.
+     */
+    getAvailableAdapters() {
+        return Object.keys(ADAPTER_FACTORIES);
+    }
+
+    /**
+     * Human-readable name of the installed adapter.
+     */
+    getAdapterName() {
+        return this._adapter?.constructor?.name || 'unknown';
     }
 
     getValidator() {

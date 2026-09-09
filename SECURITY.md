@@ -17,6 +17,23 @@ server-enforced — those are called out explicitly.
 | Malicious plugin/skill | Mitigated — skill manifest validation + per-skill disable |
 | Device/API key exposure | Mitigated by design — no keys exist; keys must stay server-side |
 
+## 1.1 Phase 6.3 update (AI gateway + HTTP model adapter)
+
+Since v0.5.0 ALICE ships an optional **local backend**: `server/gateway.js`
+(Phase 6.3.1) and `js/ai/httpModelAdapter.js` (Phase 6.3.2).
+
+- Provider credentials (Groq / OpenRouter / Ollama) exist **only** in the
+  gateway process environment. They are never present in `js/`, `CONFIG`,
+  `localStorage`, or any browser request.
+- The adapter's only destination is the configured local gateway
+  (loopback / explicit allowlist). Provider URLs, arbitrary upstream
+  destinations, and `Authorization` headers are structurally impossible:
+  caller-supplied URL/header/key options are ignored and the outbound body is
+  whitelisted to `{ prompt, responseFormat, temperature, model? }`.
+- Model output is treated as untrusted data and is still validated by
+  `PlanValidator` before `Agent` → Permission Gateway → SkillManager.
+- The gateway remains loopback-only, SSRF-safe, rate limited, and size capped.
+
 ## 2. What is enforced
 
 - **Sensitive-action confirmation** (`js/permissions.js`): delete/remove/clear/

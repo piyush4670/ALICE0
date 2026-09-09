@@ -86,6 +86,16 @@ ALICE0/
 │   ├── tts.js              # Text-to-speech
 │   ├── conversation.js     # Conversation flow + agent routing
 │   ├── utils.js            # Utilities (summarizeText, redact, escapeHtml)
+│   ├── ai/                 # AI Brain layer (Phase 6.2/6.3)
+│   │   ├── aiBrain.js      # Model-agnostic AI Brain + adapter registry
+│   │   ├── modelAdapter.js # Adapter abstraction + AI error hierarchy
+│   │   ├── mockAdapter.js  # Deterministic offline adapter (default)
+│   │   ├── httpModelAdapter.js # Gateway-only HTTP adapter (Phase 6.3.2)
+│   │   ├── planValidator.js# Pre-execution plan validation
+│   │   ├── planSchema.js   # Plan schema + injection scanning
+│   │   ├── contextBuilder.js # Bounded context assembly
+│   │   ├── toolDiscovery.js# Safe tool descriptors
+│   │   └── memoryAdapter.js# Bounded memory retrieval
 │   └── skills/
 │       ├── calculator.js   # Calculator skill
 │       ├── websearch.js    # Web search (DuckDuckGo API)
@@ -99,9 +109,13 @@ ALICE0/
 │       ├── browser.js      # Browser assistance (NEW — Part 5)
 │       ├── dev.js          # Developer mode (NEW — Part 5)
 │       └── iot.js          # IoT device control (NEW — Part 5)
+├── server/
+│   └── gateway.js          # Secure local AI gateway (Phase 6.3.1, credential boundary)
 ├── tests/
 │   ├── agent.test.mjs      # Planner/agent/permissions (Part 4)
 │   ├── part5.test.mjs      # Part 5 feature tests
+│   ├── gateway.test.mjs    # Secure local gateway (Phase 6.3.1)
+│   ├── httpModelAdapter.test.mjs # HTTP model adapter (Phase 6.3.2)
 │   └── load.test.mjs       # Verifies all modules import cleanly
 └── README.md
 ```
@@ -210,7 +224,9 @@ python -m http.server 8080
 ```bash
 node tests/agent.test.mjs   # planner, agent loop, failure recovery, permissions (32 checks)
 node tests/part5.test.mjs   # Part 5: plugins, memory, settings, IoT, dev, security (34 checks)
-node tests/load.test.mjs    # verifies all 34 modules import without errors
+node tests/gateway.test.mjs # Phase 6.3.1 secure local AI gateway (44 checks)
+node tests/httpModelAdapter.test.mjs # Phase 6.3.2 HTTP model adapter (140 checks)
+node tests/load.test.mjs    # verifies all 43 modules import without errors
 ```
 
 ## 🧠 How the Agent Works (Part 4)

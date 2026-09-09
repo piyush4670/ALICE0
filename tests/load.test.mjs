@@ -36,7 +36,7 @@ const files = [
     '../js/taskPlanner.js', '../js/permissions.js', '../js/agent.js',
     '../js/ai/planSchema.js', '../js/ai/planValidator.js', '../js/ai/toolDiscovery.js',
     '../js/ai/memoryAdapter.js', '../js/ai/contextBuilder.js', '../js/ai/modelAdapter.js',
-    '../js/ai/mockAdapter.js', '../js/ai/aiBrain.js',
+    '../js/ai/mockAdapter.js', '../js/ai/httpModelAdapter.js', '../js/ai/aiBrain.js',
     '../js/taskDashboard.js', '../js/settings.js', '../js/notifications.js',
     '../js/proactive.js', '../js/integrations.js',
     '../js/conversation.js', '../js/hud.js',
