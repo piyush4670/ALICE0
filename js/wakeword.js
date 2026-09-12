@@ -1,6 +1,21 @@
 /**
  * ALICE Wake Word Detection
- * Detects "Hey Alice" wake phrase using audio analysis
+ * ------------------------------------------------------------------
+ * IMPORTANT HONESTY NOTE (Stage 1A):
+ * This module does NOT perform true "Hey Alice" phrase verification.
+ * It is an energy-based VOICE-ACTIVITY detector: when the microphone
+ * picks up a speech-length burst of audio (0.8–3.0 s) and the cooldown
+ * has elapsed, it reports a wake. No speech-to-phrase matching happens
+ * here, and no external wake-word engine is introduced in Stage 1A.
+ * The `_wakePhrases` list is reserved for a future real engine.
+ *
+ * Stage 1A correctness fixes:
+ *  - start() is guarded against concurrent invocations (no duplicate
+ *    detection loops) and against a Stop arriving while the microphone
+ *    capture is still being acquired (token-based invalidation).
+ *  - stop() always invalidates in-flight starts and pending triggers.
+ *  - The audio buffer is actually filled now; previously it stayed
+ *    empty, so automatic wake could never fire at all.
  */
 import { state } from './state.js';
 import { audioManager } from './audio.js';
@@ -8,20 +23,28 @@ import { audioManager } from './audio.js';
 class WakeWordDetector {
     constructor() {
         this._isRunning = false;
+        this._starting = false;
+        // Monotonic token: stop() bumps it so any in-flight async start
+        // or pending trigger becomes stale and aborts itself.
+        this._startToken = 0;
         this._audioBuffer = [];
+        this._maxBufferSamples = 256;
         this._sampleRate = 16000;
+        // Reserved for a future real wake-phrase engine (unused today —
+        // see the module-level honesty note).
         this._wakePhrases = ['hey alice', 'hey, alice', 'hi alice', 'hi, alice'];
         this._lastWakeTime = 0;
         this._cooldownMs = 3000; // Minimum time between wake detections
         this._onWakeDetected = null;
         this._animationFrame = null;
-        
+
         // Simple energy-based detection
         this._silenceThreshold = 0.02;
         this._speechThreshold = 0.05;
         this._minPhraseLength = 0.8; // seconds
         this._maxPhraseLength = 3.0; // seconds
-        
+        this._minBufferSamples = 10;
+
         this._silenceCount = 0;
         this._speechCount = 0;
         this._isSpeaking = false;
@@ -37,40 +60,67 @@ class WakeWordDetector {
     }
 
     /**
-     * Start wake word detection
+     * Start wake word detection.
+     * Returns true when detection is running, false otherwise.
+     * Safe against double-start and against Stop racing the async
+     * microphone capture.
      */
     async start() {
-        if (this._isRunning) return;
+        if (this._isRunning) return true;
+        if (this._starting) return false; // a start is already in flight
 
-        const stream = await audioManager.startCapture();
-        if (!stream) {
-            state.logActivity('Cannot start wake word detection: no audio stream', 'danger');
-            return false;
+        this._starting = true;
+        const token = ++this._startToken;
+
+        try {
+            const stream = await audioManager.startCapture();
+
+            // Stop was pressed (or a newer start superseded us) while we
+            // were waiting for the microphone — abort, don't go live.
+            if (token !== this._startToken) {
+                return false;
+            }
+
+            if (!stream) {
+                state.logActivity('Cannot start wake word detection: no audio stream', 'danger');
+                return false;
+            }
+
+            this._isRunning = true;
+            this._audioBuffer = [];
+            this._silenceCount = 0;
+            this._speechCount = 0;
+            this._isSpeaking = false;
+
+            state.logActivity('Wake detection active (voice-activity placeholder — no phrase verification)', 'success');
+
+            this._detectLoop();
+            return true;
+        } finally {
+            if (token === this._startToken) {
+                this._starting = false;
+            }
         }
-
-        this._isRunning = true;
-        this._audioBuffer = [];
-        this._silenceCount = 0;
-        this._speechCount = 0;
-        this._isSpeaking = false;
-        
-        state.logActivity('Wake word detection active', 'success');
-        
-        this._detectLoop();
-        return true;
     }
 
     /**
-     * Stop wake word detection
+     * Stop wake word detection. Invalidates any in-flight start and any
+     * pending trigger so detection cannot resurrect itself after Stop.
      */
     stop() {
+        if (!this._isRunning && !this._starting) {
+            return;
+        }
+
+        this._startToken++; // stale-ify in-flight start()/pending triggers
         this._isRunning = false;
-        
+        this._starting = false;
+
         if (this._animationFrame) {
             cancelAnimationFrame(this._animationFrame);
             this._animationFrame = null;
         }
-        
+
         state.logActivity('Wake word detection stopped', 'info');
     }
 
@@ -83,19 +133,27 @@ class WakeWordDetector {
         const level = audioManager.getAudioLevel();
         const now = Date.now();
 
+        // Record levels so a completed speech segment has real data behind
+        // it (previously the buffer was never filled, so wake could never
+        // fire automatically).
+        this._audioBuffer.push(level);
+        if (this._audioBuffer.length > this._maxBufferSamples) {
+            this._audioBuffer.shift();
+        }
+
         if (level < this._silenceThreshold) {
             // Silence detected
             this._silenceCount++;
             this._speechCount = 0;
-            
+
             if (this._isSpeaking && (now - this._lastSpeechTime) > 300) {
                 // End of speech segment
                 const phraseDuration = (now - this._phraseStartTime) / 1000;
-                
+
                 if (phraseDuration >= this._minPhraseLength && phraseDuration <= this._maxPhraseLength) {
                     this._checkForWakeWord();
                 }
-                
+
                 this._isSpeaking = false;
                 this._audioBuffer = [];
             }
@@ -107,7 +165,7 @@ class WakeWordDetector {
                 this._phraseStartTime = now - (this._silenceCount * 50); // Estimate start
                 this._audioBuffer = [];
             }
-            
+
             this._speechCount++;
             this._lastSpeechTime = now;
             this._silenceCount = 0;
@@ -118,66 +176,35 @@ class WakeWordDetector {
     }
 
     /**
-     * Check if the captured audio matches a wake phrase
+     * A speech-length audio segment just ended. If we have enough samples
+     * and the cooldown allows it, report a wake. This is voice-activity
+     * detection only — the phrase content is NOT verified (see module
+     * header).
      */
     _checkForWakeWord() {
-        // For now, we'll use Speech Recognition to detect the wake phrase
-        // This is a fallback/complementary approach
-        
-        if (this._audioBuffer.length < 10) return;
-        
-        // Use Web Speech API for actual wake word detection
-        // This runs only when we detect speech, not continuously
-        this._useSpeechRecognitionForWake();
-    }
+        if (this._audioBuffer.length < this._minBufferSamples) return;
 
-    /**
-     * Use Speech Recognition to detect wake phrase
-     */
-    _useSpeechRecognitionForWake() {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        
-        if (!SpeechRecognition) {
-            // Fallback: just check if enough time has passed since last wake
-            const now = Date.now();
-            if (now - this._lastWakeTime > this._cooldownMs) {
+        const now = Date.now();
+        if (now - this._lastWakeTime <= this._cooldownMs) return;
+
+        const token = this._startToken;
+        // Small delay to debounce; re-check liveness before triggering so a
+        // Stop pressed in the meantime wins.
+        setTimeout(() => {
+            if (this._isRunning && token === this._startToken) {
                 this._triggerWake();
             }
-            return;
-        }
-
-        const recognition = new SpeechRecognition();
-        recognition.continuous = false;
-        recognition.interimResults = true;
-        recognition.lang = 'en-US';
-        recognition.maxAlternatives = 1;
-
-        // Create a temporary recognition
-        const stream = audioManager.getStream();
-        if (!stream) return;
-
-        // We'll just trigger a quick check
-        // In a real implementation, you'd process the audio buffer
-        // For now, we assume the speech detection was triggered by actual speech
-        
-        const now = Date.now();
-        if (now - this._lastWakeTime > this._cooldownMs) {
-            // Small delay to simulate processing
-            setTimeout(() => {
-                if (this._isRunning) {
-                    this._triggerWake();
-                }
-            }, 100);
-        }
+        }, 100);
     }
 
     /**
      * Trigger wake detected callback
      */
     _triggerWake() {
+        if (!this._isRunning) return;
         this._lastWakeTime = Date.now();
-        state.logActivity('Wake word detected!', 'success');
-        
+        state.logActivity('Voice activity detected — wake triggered (placeholder detection)', 'success');
+
         if (this._onWakeDetected) {
             this._onWakeDetected();
         }
