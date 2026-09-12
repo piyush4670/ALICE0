@@ -25,10 +25,15 @@ ALICE is a 5-part development project:
 - **Waveform Visualizer**: Real-time audio visualization
 
 ### Part 2 - Voice System
-- **Wake Word Detection**: "Hey Alice" activation
+- **Wake Detection**: audio-activity based wake (placeholder — no phrase
+  verification yet; see `js/wakeword.js`), plus manual Wake button
 - **Speech Recognition**: Real-time speech-to-text
 - **Natural TTS**: Human-like text-to-speech
 - **Voice Controls**: Wake, Stop, Mic toggle buttons
+- **Explicit voice startup** (Stage 1A): voice is OFF at startup — the
+  microphone is only requested when you press **Mic**. **Stop** halts
+  listening, speaking, and wake detection and returns ALICE to a valid
+  idle state.
 
 ### Part 3 - Memory & Skills
 - **Memory System**: Short-term context + user-controlled long-term memory
@@ -247,9 +252,11 @@ python -m http.server 8080
 
 **PIN**: `1234`
 
-> Voice requires a Web Speech API-capable browser (Chrome/Edge) and microphone
-> permission. Multi-step tasks can also be triggered from the **command input**
-> under the orb, or via the **Agent Demos** buttons in the debug panel (bottom-right).
+> Voice is OFF until you press **Mic** and grant permission (Web Speech
+> API-capable browser required — Chrome/Edge). Text commands work without
+> any microphone access. Multi-step tasks can also be triggered from the
+> **command input** under the orb, or via the **Agent Demos** buttons in
+> the debug panel (bottom-right).
 
 ### Running the tests (Node)
 
@@ -259,6 +266,7 @@ node tests/part5.test.mjs   # Part 5: plugins, memory, settings, IoT, dev, secur
 node tests/gateway.test.mjs # Phase 6.3.1 secure local AI gateway (44 checks)
 node tests/httpModelAdapter.test.mjs # Phase 6.3.2 HTTP model adapter (140 checks)
 node tests/realProvider.test.mjs     # Phase 6.3.3 real provider connection (201 checks)
+node tests/voiceLifecycle.test.mjs   # Stage 1A voice lifecycle / Stop / races (66 checks)
 node tests/load.test.mjs    # verifies all 43 modules import without errors
 
 # or run every suite at once
