@@ -1,9 +1,15 @@
 /**
  * ALICE Main Application
  * Entry point for the ALICE interface
+ *
+ * Stage 1A: voice is OFF until the user explicitly enables the
+ * microphone. No automatic permission request at startup. All voice
+ * lifecycle transitions live in the ConversationManager; this module
+ * only forwards user intent (Mic / Wake / Stop / text input).
  */
 import { CONFIG } from './config.js';
 import { state } from './state.js';
+import { VOICE_STATUS } from './voiceStatus.js';
 import { auth } from './auth.js';
 import { bootSequence } from './boot.js';
 import { hud } from './hud.js';
@@ -17,14 +23,16 @@ class ALICEApp {
     constructor() {
         this._screens = {};
         this._currentScreen = null;
+        // Guards against double-enabling voice (double-click / racing flows)
+        this._voiceEnableInFlight = false;
     }
 
     async init() {
-        console.log(`%c ALICE Interface v${CONFIG.system.version} (${CONFIG.system.codename}) `, 
+        console.log(`%c ALICE Interface v${CONFIG.system.version} (${CONFIG.system.codename}) `,
             'background: #00f0ff; color: #0a0a0f; font-weight: bold; padding: 4px 8px; border-radius: 4px;');
-        console.log('%c Voice Systems: Part 2 Active ', 
+        console.log('%c Voice Systems: On-demand (microphone stays OFF until enabled) ',
             'background: #00ff88; color: #0a0a0f; padding: 4px 8px; border-radius: 4px;');
-        
+
         // Cache screen elements
         this._screens.auth = document.getElementById('auth-screen');
         this._screens.boot = document.getElementById('boot-screen');
@@ -34,6 +42,7 @@ class ALICEApp {
         this._setupAuthEvents();
         this._setupDebugControls();
         this._setupVoiceControls();
+        this._setupConversationBindings();
         this._setupCommandInput();
         this._setupAgentDemos();
 
@@ -123,7 +132,7 @@ class ALICEApp {
 
     async _startBootSequence() {
         this._showScreen('boot');
-        
+
         // Update boot items to include voice systems
         const itemsContainer = this._screens.boot?.querySelector('.boot-items');
         if (itemsContainer) {
@@ -138,7 +147,7 @@ class ALICEApp {
         }
 
         await bootSequence.start(this._screens.boot);
-        
+
         await delay(500);
         this._showHUD();
     }
@@ -146,88 +155,129 @@ class ALICEApp {
     _showHUD() {
         this._showScreen('hud');
         hud.init(this._screens.hud);
-        
+
         state.logActivity('Welcome to ALICE', 'success');
         state.notify('Systems online — how can I help?', 'success');
 
         // Start proactive assistance (respects settings)
         proactive.start();
-        
-        // Start voice system after a short delay
-        setTimeout(() => {
-            this._initVoiceSystem();
-        }, 1000);
+
+        // Stage 1A: voice is NOT started here. No microphone permission
+        // request happens automatically — the system boots to:
+        //   ALICE — READY — Voice OFF
+        // The user explicitly enables voice with the Mic button.
+        state.setVoiceState('isMicrophoneAvailable', audioManager.isAvailable());
+        state.setVoiceStatus(VOICE_STATUS.OFF);
     }
 
-    async _initVoiceSystem() {
-        // Request microphone permission
-        const hasPermission = await audioManager.requestPermission();
-        
-        state.setVoiceState('isMicrophoneAvailable', audioManager.isAvailable());
-        state.setVoiceState('isMicrophonePermission', hasPermission);
-        
-        if (!hasPermission) {
-            state.logActivity('Microphone access required for voice features', 'warning');
-            return;
+    // ==================================================================
+    // Voice (Stage 1A)
+    // ==================================================================
+
+    /**
+     * Register the conversation → state bindings exactly once. The HUD
+     * observes state; these callbacks just mirror conversation events
+     * into state. No UI module decides lifecycle on its own anymore.
+     */
+    _setupConversationBindings() {
+        conversation.onWakeWord(() => {
+            // Clear any stale transcript when a fresh interaction starts.
+            // (The LISTENING flag is driven by the real STT start event —
+            // never optimistically here.)
+            state.clearTranscript();
+        });
+
+        conversation.onSpeechResult((result) => {
+            state.setTranscript(result.text);
+        });
+
+        conversation.onAliceSpeak((text) => {
+            state.setLastResponse(text);
+        });
+    }
+
+    /**
+     * Explicitly enable the voice system:
+     *   Mic → permission request → granted → Voice READY
+     * On denial the system reports "Voice unavailable" and text
+     * interaction keeps working normally.
+     */
+    async _enableVoice() {
+        if (this._voiceEnableInFlight) return;
+        if (state.getVoiceState().isActive) return;
+
+        this._voiceEnableInFlight = true;
+        try {
+            state.setVoiceState('isMicrophoneAvailable', audioManager.isAvailable());
+
+            const hasPermission = await audioManager.requestPermission();
+            state.setVoiceState('isMicrophonePermission', hasPermission);
+
+            if (!hasPermission) {
+                state.setVoiceStatus(VOICE_STATUS.ERROR, 'Voice unavailable — microphone access denied');
+                state.logActivity('Microphone access denied — voice disabled; text input still works', 'warning');
+                state.notify('Voice unavailable — microphone access denied. Text commands still work.', 'warning');
+                return;
+            }
+
+            const started = await conversation.start();
+            if (!started) {
+                state.setVoiceStatus(VOICE_STATUS.ERROR, 'Voice unavailable');
+                state.logActivity('Voice system could not start (missing browser support?)', 'warning');
+                return;
+            }
+
+            state.logActivity('Voice system ready — say "Hey Alice" or press Wake', 'success');
+        } finally {
+            this._voiceEnableInFlight = false;
         }
-        
-        // Start conversation system
-        const started = await conversation.start();
-        
-        if (started) {
-            state.setVoiceState('isActive', true);
-            state.logActivity('Voice system ready - say "Hey Alice" to activate', 'success');
-            
-            // Setup conversation callbacks for HUD
-            conversation.onWakeWord(() => {
-                state.setVoiceState('isListening', true);
-            });
-            
-            conversation.onSpeechResult((result) => {
-                state.setTranscript(result.text);
-            });
-            
-            conversation.onAliceSpeak((text) => {
-                state.setLastResponse(text);
-            });
-        }
+    }
+
+    /**
+     * Explicitly disable the voice system (Mic toggle OFF). Everything is
+     * torn down and the microphone is released.
+     */
+    _disableVoice() {
+        conversation.stop();
+        state.logActivity('Voice system disabled', 'info');
     }
 
     // Voice control buttons
     _setupVoiceControls() {
-        // Manual wake button
+        // Manual wake button — preserved in Stage 1A. Works whenever the
+        // voice system is enabled, even if wake detection is paused.
         const wakeButton = document.getElementById('voice-wake-btn');
         wakeButton?.addEventListener('click', () => {
-            if (conversation.isActive()) {
-                conversation.triggerWakeWord();
+            if (!conversation.triggerWakeWord()) {
+                state.notify('Voice is OFF — press Mic to enable it first', 'info');
             }
         });
-        
-        // Stop speaking button
+
+        // Stop button (Stage 1A fix): actually stops STT, TTS and wake
+        // detection, prevents stale auto-restarts, and returns the system
+        // to a valid idle state. Previously this only called
+        // stopSpeaking() — which even re-armed wake detection.
         const stopButton = document.getElementById('voice-stop-btn');
         stopButton?.addEventListener('click', () => {
-            if (conversation.isListening()) {
-                // Stop listening
-            }
-            conversation.stopSpeaking();
+            conversation.stopAllActivity();
         });
-        
-        // Microphone toggle
+
+        // Microphone toggle — the ONLY way voice gets enabled/disabled
         const micToggle = document.getElementById('mic-toggle');
         micToggle?.addEventListener('click', () => {
             const voiceState = state.getVoiceState();
             if (voiceState.isActive) {
-                conversation.stop();
-                state.setVoiceState('isActive', false);
-                state.logActivity('Voice system disabled', 'info');
+                this._disableVoice();
             } else {
-                this._initVoiceSystem();
+                this._enableVoice();
             }
         });
     }
 
     // Text command input (Part 4) — lets the user drive multi-step tasks
     // without needing the microphone (useful for testing/demo environments).
+    // Stage 1A: this path works with voice OFF and is never blocked by the
+    // voice lifecycle.
     _setupCommandInput() {
         const form = document.getElementById('command-form');
         const input = document.getElementById('command-input');
@@ -256,7 +306,8 @@ class ALICEApp {
         });
     }
 
-    // Debug controls for testing states
+    // Debug controls for testing states (kept in Stage 1A; full debug UI
+    // separation happens in Stage 1B)
     _setupDebugControls() {
         const debugPanel = document.getElementById('debug-panel');
         if (!debugPanel) return;
@@ -266,53 +317,49 @@ class ALICEApp {
             button.addEventListener('click', () => {
                 const targetState = button.dataset.state;
                 state.set('aliceState', targetState);
-                
+
                 // Update active button
                 stateButtons.forEach(btn => btn.classList.remove('active'));
                 button.classList.add('active');
             });
         });
 
-        // Voice debug section
+        // Voice debug section — manual wake trigger
         const voiceTestBtn = debugPanel.querySelector('#voice-test-btn');
         voiceTestBtn?.addEventListener('click', () => {
-            if (conversation.isActive()) {
-                conversation.triggerWakeWord();
+            if (!conversation.triggerWakeWord()) {
+                state.notify('Voice is OFF — press Mic to enable it first', 'info');
             }
         });
 
         const logoutBtn = debugPanel.querySelector('#logout-btn');
         logoutBtn?.addEventListener('click', () => {
             hud.destroy();
-            conversation.stop();
+            conversation.stop(); // releases mic, STT, TTS, wake; sets Voice OFF
             auth.logout();
             this._showScreen('auth');
-            
+
             // Reset auth screen
             const input = this._screens.auth?.querySelector('.auth-input');
             const status = this._screens.auth?.querySelector('.auth-status');
             const dots = this._screens.auth?.querySelectorAll('.pin-dot');
-            
+
             if (input) input.value = '';
             if (status) {
                 status.textContent = '';
                 status.className = 'auth-status';
             }
             if (dots) dots.forEach(dot => dot.classList.remove('filled'));
-            
-            // Reset voice state
-            state.setVoiceState('isActive', false);
-            state.setVoiceState('isListening', false);
         });
 
         // Toggle debug panel
         const toggleBtn = document.getElementById('debug-toggle');
         const closeBtn = debugPanel.querySelector('.debug-close');
-        
+
         toggleBtn?.addEventListener('click', () => {
             debugPanel.classList.add('visible');
         });
-        
+
         closeBtn?.addEventListener('click', () => {
             debugPanel.classList.remove('visible');
         });

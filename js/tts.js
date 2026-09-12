@@ -152,6 +152,14 @@ class TTSAdapter {
             return false;
         }
 
+        // Mark the in-flight utterance as explicitly superseded BEFORE
+        // cancelling, so its async onend/onerror is reported as a
+        // cancellation instead of a natural completion (Stage 1A). The
+        // conversation layer must not auto-wake or go idle on a stop.
+        if (this._currentUtterance) {
+            this._currentUtterance._aliceCancelled = true;
+        }
+
         // Cancel any current speech
         this._synth.cancel();
 
@@ -178,13 +186,14 @@ class TTSAdapter {
         utterance.onend = () => {
             this._isSpeaking = false;
             this._isPaused = false;
-            state.logActivity('Speaking ended', 'info');
-            if (this._onEnd) this._onEnd();
+            const cancelled = utterance._aliceCancelled === true;
+            state.logActivity(cancelled ? 'Speaking cancelled' : 'Speaking ended', 'info');
+            if (this._onEnd) this._onEnd({ cancelled });
         };
 
         utterance.onerror = (event) => {
             this._isSpeaking = false;
-            
+
             if (event.error !== 'canceled' && event.error !== 'interrupted') {
                 state.logActivity(`Speech error: ${event.error}`, 'warning');
                 if (this._onError) this._onError(event.error);
@@ -235,10 +244,14 @@ class TTSAdapter {
     }
 
     /**
-     * Stop speaking
+     * Stop speaking. The in-flight utterance is flagged as cancelled so the
+     * async onend is not treated as natural completion (Stage 1A).
      */
     stop() {
         if (this._synth) {
+            if (this._currentUtterance) {
+                this._currentUtterance._aliceCancelled = true;
+            }
             this._synth.cancel();
             this._isSpeaking = false;
             this._isPaused = false;

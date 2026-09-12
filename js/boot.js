@@ -27,6 +27,11 @@ class BootSequence {
         ];
         this._currentIndex = 0;
         this._isRunning = false;
+        // Stage 1A: voice subsystems are NOT started at boot — the
+        // microphone stays off until the user explicitly enables voice.
+        // Boot must not claim they are online, so these items report
+        // "Standby" instead (boot visuals themselves are unchanged).
+        this._standbyItems = new Set(['audio', 'voice', 'tts']);
     }
 
     get bootItems() {
@@ -83,11 +88,14 @@ class BootSequence {
                     itemEl.classList.remove('initializing');
                     itemEl.classList.add('complete');
                     item.status = 'complete';
-                    
-                    // Update status text in item
+
+                    // Update status text in item. Voice-related subsystems
+                    // report "Standby": they are loaded but NOT started, and
+                    // the microphone is not touched until the user explicitly
+                    // enables voice (Stage 1A).
                     const statusEl = itemEl.querySelector('.boot-item-status');
                     if (statusEl) {
-                        statusEl.textContent = 'Online';
+                        statusEl.textContent = this._standbyItems.has(item.id) ? 'Standby' : 'Online';
                     }
                     
                     // Flash animation
