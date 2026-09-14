@@ -1,14 +1,16 @@
 /**
- * ALICE HUD Module
- * Main Heads-Up Display for the AI interface
- * Part 3: Integrated with skills and memory
+ * ALICE HUD Module — Visual Reconstruction 1B
+ * Premium AI Assistant Interface
+ * 
+ * Renders the assistant-focused UI: orb, state, conversation,
+ * task progress, and controls. All visual updates observe state;
+ * the HUD never decides lifecycle on its own.
  */
 import { CONFIG } from './config.js';
 import { state } from './state.js';
 import { VOICE_STATUS } from './voiceStatus.js';
 import { audioManager } from './audio.js';
-import { formatTime, formatDate, escapeHtml } from './utils.js';
-import { taskDashboard } from './taskDashboard.js';
+import { formatTime, escapeHtml } from './utils.js';
 import { permissions } from './permissions.js';
 import { notifications } from './notifications.js';
 import { settings } from './settings.js';
@@ -18,10 +20,10 @@ import { memory } from './memory.js';
 class ALICEHUD {
     constructor() {
         this._animationFrame = null;
-        this._orbParticles = [];
         this._waveformData = [];
         this._hudElement = null;
-        this._voiceIndicatorElement = null;
+        this._conversationRendered = false;
+        this._promptVisible = false;
     }
 
     init(hudElement) {
@@ -30,8 +32,8 @@ class ALICEHUD {
         this._setupWaveform();
         this._setupStateSubscription();
         this._setupVoiceUI();
-        this._setupSkillUI();
-        this._setupTaskDashboard();
+        this._setupConversation();
+        this._setupTaskInline();
         this._setupConfirmationModal();
         this._setupNotifications();
         this._setupSettingsModal();
@@ -39,91 +41,64 @@ class ALICEHUD {
         this._setupQuickActions();
         this._startRenderLoop();
         
-        // Update time and date
+        // Update time display
         this._updateTimeDisplay();
         setInterval(() => this._updateTimeDisplay(), 1000);
         
-        // Start metrics simulation
+        // Start metrics simulation (rendered to debug panel only)
         state.startMetricsSimulation();
-        this._updateMetricsDisplay();
-        state.subscribe('systemMetrics', () => this._updateMetricsDisplay());
+        state.subscribe('systemMetrics', () => this._updateDebugMetrics());
         
-        // Subscribe to voice state changes
+        // Subscribe to voice transcript
         state.subscribe('voice.currentTranscript', (text) => {
-            this._updateTranscriptDisplay(text);
+            this._updateTranscriptOverlay(text);
         });
         
-        state.subscribe('voice.lastAliceResponse', (text) => {
-            this._updateResponseDisplay(text);
+        // Subscribe to conversation changes
+        state.subscribe('conversation', () => {
+            this._renderConversation();
         });
 
-        // Subscribe to skill state changes
-        state.subscribe('skill', (skillState) => {
-            this._updateSkillDisplay(skillState);
+        // Subscribe to task changes
+        state.subscribe('task', () => {
+            this._renderTaskInline();
         });
+
+        // Subscribe to activity log (debug panel only)
+        state.subscribe('activityLog', () => {
+            this._updateDebugActivityLog();
+        });
+        
+        // Show initial prompt
+        this._showPrompt('What can I do for you?');
         
         state.logActivity('HUD initialized and ready', 'success');
     }
 
+    // ------------------------------------------------------------------
+    // Orb
+    // ------------------------------------------------------------------
+
     _setupOrb() {
-        const orb = this._hudElement?.querySelector('.alice-orb');
-        if (!orb) return;
-
-        // Create particles for orb effect
-        const particleCount = 30;
-        const orbContainer = orb.querySelector('.orb-particles');
-        
-        if (orbContainer) {
-            orbContainer.innerHTML = ''; // Clear existing
-            for (let i = 0; i < particleCount; i++) {
-                const particle = document.createElement('div');
-                particle.className = 'orb-particle';
-                particle.style.setProperty('--angle', `${(i / particleCount) * 360}deg`);
-                particle.style.setProperty('--delay', `${Math.random() * 2}s`);
-                particle.style.setProperty('--duration', `${3 + Math.random() * 2}s`);
-                orbContainer.appendChild(particle);
-            }
-        }
-
-        // Core glow pulse
-        const coreGlow = orb.querySelector('.orb-core-glow');
-        if (coreGlow) {
-            this._animateOrbGlow(coreGlow);
-        }
+        // No particle setup needed — orb uses pure CSS animations now
+        // that are state-driven via class changes
     }
 
-    _animateOrbGlow(element) {
-        let scale = 1;
-        let growing = true;
-        
-        const animate = () => {
-            if (growing) {
-                scale += 0.005;
-                if (scale >= 1.3) growing = false;
-            } else {
-                scale -= 0.005;
-                if (scale <= 0.7) growing = true;
-            }
-            
-            element.style.transform = `scale(${scale})`;
-            element.style.opacity = 0.3 + (scale - 0.7) * 0.3;
-            
-            requestAnimationFrame(animate);
-        };
-        
-        animate();
-    }
+    // ------------------------------------------------------------------
+    // Waveform (truthful)
+    // ------------------------------------------------------------------
 
     _setupWaveform() {
         const canvas = this._hudElement?.querySelector('.waveform-canvas');
         if (!canvas) return;
 
-        // Initialize waveform data
-        this._waveformData = new Array(64).fill(0);
+        this._waveformData = new Array(48).fill(0);
         
-        // Setup canvas
-        canvas.width = canvas.offsetWidth * 2;
-        canvas.height = canvas.offsetHeight * 2;
+        // Setup canvas with proper sizing
+        const container = canvas.parentElement;
+        const rect = container.getBoundingClientRect();
+        canvas.width = rect.width * 2;
+        canvas.height = rect.height * 2;
         
         this._waveformCtx = canvas.getContext('2d');
         this._waveformCtx.scale(2, 2);
@@ -133,52 +108,51 @@ class ALICEHUD {
         if (!this._waveformCtx) return;
         
         const canvas = this._hudElement?.querySelector('.waveform-canvas');
-        if (!canvas) return;
+        const container = this._hudElement?.querySelector('.waveform-container');
+        if (!canvas || !container) return;
 
         const ctx = this._waveformCtx;
         const width = canvas.offsetWidth;
         const height = canvas.offsetHeight;
         const aliceState = state.get('aliceState');
-        const voiceState = state.getVoiceState();
         
-        // Determine intensity based on actual audio if capturing
-        let intensity = {
-            IDLE: 0.15,
-            LISTENING: 0.8,
-            PROCESSING: 0.5,
-            SPEAKING: 1.0,
-            EXECUTING: 0.7,
-            UNDERSTANDING: 0.5,
-            SELECTING_TOOL: 0.6,
-            COMPLETING: 0.4
-        }[aliceState] || 0.15;
+        // Truthful waveform: only show meaningful activity when real audio exists
+        const isAudioActive = audioManager.isCapturing();
+        const isListening = aliceState === 'LISTENING';
+        const isSpeaking = aliceState === 'SPEAKING';
+        
+        // Show waveform only when there's real audio activity
+        const shouldShow = isListening || isSpeaking || 
+            (aliceState !== 'IDLE' && aliceState !== 'COMPLETING');
+        
+        container.classList.toggle('visible', shouldShow);
+        
+        if (!shouldShow) {
+            ctx.clearRect(0, 0, width, height);
+            return;
+        }
 
-        // Shift data and add new values
+        // Shift data
         for (let i = 0; i < this._waveformData.length - 1; i++) {
             this._waveformData[i] = this._waveformData[i + 1];
         }
         
         let newValue;
         
-        // Use actual audio data if available and listening
-        if (audioManager.isCapturing() && (aliceState === 'LISTENING' || aliceState === 'SPEAKING')) {
+        if (isAudioActive && isListening) {
+            // Real audio data
             const audioLevel = audioManager.getAudioLevel();
-            
-            // Calculate level from actual audio
-            const actualLevel = audioLevel * intensity * 2;
-            newValue = actualLevel + (Math.random() - 0.5) * 0.1;
-        } else if (aliceState === 'SPEAKING') {
-            // Simulate speech waveform
-            newValue = (Math.random() - 0.5) * intensity;
-        } else if (aliceState === 'LISTENING') {
-            // Listening visualization - respond to ambient
-            const ambientLevel = audioManager.getAudioLevel();
-            newValue = (Math.random() - 0.5) * ambientLevel * 3;
-        } else if (aliceState === 'IDLE') {
-            // Subtle idle animation
-            newValue = Math.sin(Date.now() / 1000) * 0.08;
+            newValue = audioLevel * 2 + (Math.random() - 0.5) * 0.05;
+        } else if (isSpeaking) {
+            // Speaking animation (simulated but clearly state-driven)
+            newValue = (Math.random() * 0.4 + 0.1) * Math.sin(Date.now() / 200);
+        } else if (aliceState === 'PROCESSING' || aliceState === 'UNDERSTANDING') {
+            // Processing: subtle rhythmic pattern
+            newValue = Math.sin(Date.now() / 600) * 0.2 + (Math.random() - 0.5) * 0.05;
+        } else if (aliceState === 'EXECUTING') {
+            newValue = Math.sin(Date.now() / 400) * 0.3 + (Math.random() - 0.5) * 0.08;
         } else {
-            newValue = (Math.random() - 0.5) * intensity * 0.5;
+            newValue = 0;
         }
         
         this._waveformData[this._waveformData.length - 1] = newValue;
@@ -186,75 +160,210 @@ class ALICEHUD {
         // Clear and draw
         ctx.clearRect(0, 0, width, height);
         
-        const barWidth = width / this._waveformData.length;
+        const barCount = this._waveformData.length;
+        const barWidth = width / barCount;
         const centerY = height / 2;
         
-        // Dynamic color based on state
+        // Color based on state
         const colors = {
-            IDLE: CONFIG.visuals.primaryColor,
             LISTENING: CONFIG.visuals.primaryColor,
             PROCESSING: CONFIG.visuals.warningColor,
-            SPEAKING: CONFIG.visuals.accentColor,
-            EXECUTING: CONFIG.visuals.secondaryColor,
             UNDERSTANDING: CONFIG.visuals.warningColor,
-            SELECTING_TOOL: CONFIG.visuals.secondaryColor,
+            SPEAKING: CONFIG.visuals.accentColor,
+            EXECUTING: CONFIG.visuals.primaryColor,
+            SELECTING_TOOL: CONFIG.visuals.primaryColor,
             COMPLETING: CONFIG.visuals.accentColor
         };
         
-        ctx.fillStyle = colors[aliceState] || CONFIG.visuals.primaryColor;
-        ctx.shadowBlur = 10;
-        ctx.shadowColor = colors[aliceState] || CONFIG.visuals.primaryColor;
+        const color = colors[aliceState] || CONFIG.visuals.primaryColor;
+        ctx.fillStyle = color;
 
-        for (let i = 0; i < this._waveformData.length; i++) {
-            const barHeight = Math.abs(this._waveformData[i]) * height * 0.9;
+        for (let i = 0; i < barCount; i++) {
+            const val = Math.abs(this._waveformData[i]);
+            const barHeight = Math.max(2, val * height * 0.85);
             const x = i * barWidth;
+            const bw = Math.max(1, barWidth - 2);
+            const by = centerY - barHeight / 2;
             
-            // Draw bar
-            ctx.fillRect(x, centerY - barHeight / 2, barWidth - 1, Math.max(2, barHeight));
+            // Draw bar (with rounded corners if supported)
+            if (ctx.roundRect) {
+                ctx.beginPath();
+                ctx.roundRect(x + 1, by, bw, barHeight, 1);
+                ctx.fill();
+            } else {
+                ctx.fillRect(x + 1, by, bw, barHeight);
+            }
         }
     }
+
+    // ------------------------------------------------------------------
+    // State subscription
+    // ------------------------------------------------------------------
 
     _setupStateSubscription() {
         state.subscribe('aliceState', (newState, oldState) => {
             this._transitionState(oldState, newState);
         });
-        
-        state.subscribe('activityLog', () => {
-            this._updateActivityLog();
-        });
     }
+
+    // ------------------------------------------------------------------
+    // Voice UI
+    // ------------------------------------------------------------------
 
     _setupVoiceUI() {
-        // Voice status indicator
-        const voiceStatus = this._hudElement?.querySelector('.voice-status');
-        if (voiceStatus) {
-            this._voiceIndicatorElement = voiceStatus;
-        }
-
-        // Update voice status based on state
         state.subscribe('voice', (voiceState) => {
-            this._updateVoiceStatus(voiceState);
+            this._updateVoiceButtons(voiceState);
         });
 
-        // Render the current status immediately so the HUD opens in sync
-        // with state (Stage 1A: "Voice OFF" until the user enables it).
-        this._updateVoiceStatus(state.getVoiceState());
+        // Render initial state
+        this._updateVoiceButtons(state.getVoiceState());
     }
 
-    _setupSkillUI() {
-        // Skill panel elements
-        const skillPanel = this._hudElement?.querySelector('.skill-status');
-        if (skillPanel) {
-            this._skillPanel = skillPanel;
+    _updateVoiceButtons(voiceState) {
+        const micBtn = this._hudElement?.querySelector('#mic-toggle');
+        if (!micBtn) return;
+
+        const status = voiceState.status || VOICE_STATUS.OFF;
+        const isActive = voiceState.isActive;
+        
+        // Remove all state classes
+        micBtn.classList.remove('active', 'listening');
+        
+        if (isActive) {
+            micBtn.classList.add('active');
+            micBtn.setAttribute('aria-label', 'Disable microphone');
+            if (status === VOICE_STATUS.LISTENING) {
+                micBtn.classList.add('listening');
+            }
+        } else {
+            micBtn.setAttribute('aria-label', 'Enable microphone');
         }
     }
 
-    _setupTaskDashboard() {
-        const taskPanel = document.getElementById('task-panel');
-        if (taskPanel) {
-            taskDashboard.init(taskPanel);
+    // ------------------------------------------------------------------
+    // Conversation
+    // ------------------------------------------------------------------
+
+    _setupConversation() {
+        this._renderConversation();
+    }
+
+    _renderConversation() {
+        const container = this._hudElement?.querySelector('#conversation-scroll');
+        if (!container) return;
+
+        const messages = state.getConversation();
+        
+        if (messages.length === 0) {
+            container.innerHTML = `
+                <div class="conversation-empty">
+                    <span class="conversation-empty-text">Your conversation will appear here</span>
+                </div>
+            `;
+            return;
+        }
+
+        // Build conversation HTML
+        let html = '';
+        for (const msg of messages) {
+            const roleClass = msg.role === 'user' ? 'user' : 'assistant';
+            const roleLabel = msg.role === 'user' ? 'You' : 'ALICE';
+            const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            }) : '';
+            
+            html += `
+                <div class="conversation-msg ${roleClass}">
+                    <div class="conversation-msg-header">
+                        <span class="conversation-msg-role">${roleLabel}</span>
+                        <span class="conversation-msg-time">${time}</span>
+                    </div>
+                    <div class="conversation-msg-body">${escapeHtml(msg.text)}</div>
+                </div>
+            `;
+        }
+        
+        container.innerHTML = html;
+        
+        // Auto-scroll to bottom
+        requestAnimationFrame(() => {
+            container.scrollTop = container.scrollHeight;
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Task inline display
+    // ------------------------------------------------------------------
+
+    _setupTaskInline() {
+        this._renderTaskInline();
+    }
+
+    _renderTaskInline() {
+        const container = this._hudElement?.querySelector('#task-inline');
+        if (!container) return;
+
+        const task = state.getTask();
+        
+        // Only show when there's an active task
+        if (!task.active && task.status === 'idle') {
+            container.hidden = true;
+            return;
+        }
+
+        container.hidden = false;
+
+        // Update goal
+        const goalEl = container.querySelector('[data-task="goal"]');
+        if (goalEl) goalEl.textContent = task.goal || 'Working...';
+
+        // Update status badge
+        const statusEl = container.querySelector('[data-task="status"]');
+        if (statusEl) {
+            const statusLabels = {
+                planning: 'Planning',
+                running: 'Running',
+                waiting_confirmation: 'Awaiting confirmation',
+                completed: 'Complete',
+                failed: 'Failed',
+                cancelled: 'Cancelled'
+            };
+            statusEl.textContent = statusLabels[task.status] || task.status;
+            statusEl.className = `task-inline-status ${task.status}`;
+        }
+
+        // Update steps
+        const stepsEl = container.querySelector('[data-task="steps"]');
+        if (stepsEl) {
+            const stepIcons = {
+                pending: '○',
+                running: '●',
+                completed: '✓',
+                failed: '✕',
+                cancelled: '⊘'
+            };
+
+            const steps = task.plan || [];
+            stepsEl.innerHTML = steps.map(step => `
+                <div class="task-step-compact ${step.status}">
+                    <span class="task-step-compact-icon">${stepIcons[step.status] || '○'}</span>
+                    <span class="task-step-compact-label">${escapeHtml(step.label)}</span>
+                </div>
+            `).join('');
+        }
+
+        // Update progress
+        const progressEl = container.querySelector('[data-task="progress-fill"]');
+        if (progressEl) {
+            progressEl.style.width = `${task.progress || 0}%`;
         }
     }
+
+    // ------------------------------------------------------------------
+    // Confirmation modal
+    // ------------------------------------------------------------------
 
     _setupConfirmationModal() {
         const modal = document.getElementById('confirmation-modal');
@@ -263,14 +372,19 @@ class ALICEHUD {
         }
     }
 
+    // ------------------------------------------------------------------
+    // Notifications
+    // ------------------------------------------------------------------
+
     _setupNotifications() {
         const center = document.getElementById('notification-center');
         notifications.init(center);
     }
 
     // ------------------------------------------------------------------
-    // Settings modal (Part 5)
+    // Settings modal
     // ------------------------------------------------------------------
+
     _setupSettingsModal() {
         this._settingsModal = document.getElementById('settings-modal');
         if (!this._settingsModal) return;
@@ -278,7 +392,6 @@ class ALICEHUD {
         state.subscribe('settings', () => this._renderSettings());
         this._renderSettings();
 
-        // Close buttons
         this._settingsModal.querySelectorAll('[data-close="settings"]').forEach(b =>
             b.addEventListener('click', () => this._closeSettings()));
         this._settingsModal.addEventListener('click', (e) => {
@@ -345,7 +458,7 @@ class ALICEHUD {
             </section>
 
             <div class="settings-footer">
-                <button class="confirm-btn approve" id="settings-reset" type="button">Reset to defaults</button>
+                <button class="confirm-btn cancel" id="settings-reset" type="button">Reset to defaults</button>
             </div>
         `;
 
@@ -372,8 +485,9 @@ class ALICEHUD {
     }
 
     // ------------------------------------------------------------------
-    // Memory management modal (Part 5)
+    // Memory modal
     // ------------------------------------------------------------------
+
     _setupMemoryModal() {
         this._memoryModal = document.getElementById('memory-modal');
         if (!this._memoryModal) return;
@@ -416,7 +530,7 @@ class ALICEHUD {
                     <div class="memory-row-text">
                         <strong>${escapeHtml(m.key)}</strong> — ${escapeHtml(m.value)}
                     </div>
-                    <button class="memory-row-delete" data-delete="memory" data-key="${escapeHtml(m.key)}" type="button">✕</button>
+                    <button class="memory-row-delete" data-delete="memory" data-key="${escapeHtml(m.key)}" type="button">&times;</button>
                 </div>`).join('')
             : '<p class="memory-empty">No saved memories.</p>';
 
@@ -424,7 +538,7 @@ class ALICEHUD {
             ? Object.entries(prefs).map(([k, v]) => `
                 <div class="memory-row">
                     <div class="memory-row-text"><strong>pref:${escapeHtml(k)}</strong> — ${escapeHtml(v)}</div>
-                    <button class="memory-row-delete" data-delete="preference" data-key="${escapeHtml(k)}" type="button">✕</button>
+                    <button class="memory-row-delete" data-delete="preference" data-key="${escapeHtml(k)}" type="button">&times;</button>
                 </div>`).join('')
             : '<p class="memory-empty">No preferences.</p>';
 
@@ -432,7 +546,7 @@ class ALICEHUD {
             ? facts.map(f => `
                 <div class="memory-row">
                     <div class="memory-row-text">${escapeHtml(f.text)}</div>
-                    <button class="memory-row-delete" data-delete="fact" data-key="${escapeHtml(f.id)}" type="button">✕</button>
+                    <button class="memory-row-delete" data-delete="fact" data-key="${escapeHtml(f.id)}" type="button">&times;</button>
                 </div>`).join('')
             : '<p class="memory-empty">No pinned facts.</p>';
 
@@ -481,7 +595,6 @@ class ALICEHUD {
         });
 
         body.querySelector('#memory-clear-all')?.addEventListener('click', () => {
-            // Clear-all is irreversible → require confirmation via the shared modal
             permissions.requestConfirmation({
                 title: 'Clear all memory',
                 message: 'This permanently deletes all memories, preferences, facts, notes, and task history.',
@@ -497,11 +610,14 @@ class ALICEHUD {
     }
 
     // ------------------------------------------------------------------
-    // Quick actions
+    // Quick actions (secondary actions in footer)
     // ------------------------------------------------------------------
+
     _setupQuickActions() {
         const actions = {
-            help: () => conversationHelp(),
+            help: () => {
+                state.notify('Type a command or enable voice to interact with ALICE.', 'info', { duration: 8000 });
+            },
             settings: () => this.openSettings(),
             skills: () => this.openSettings(),
             memory: () => this.openMemory()
@@ -513,108 +629,11 @@ class ALICEHUD {
                 if (actions[action]) actions[action]();
             });
         });
-
-        function conversationHelp() {
-            state.notify('Say "help" or type a command below the core.', 'info', { duration: 8000 });
-        }
     }
 
-    // Stage 1A: the voice indicator is a PURE render of `voice.status`
-    // (single source of truth owned by the ConversationManager). The HUD
-    // never guesses listening/speaking state on its own, so it can never
-    // show "Listening" while STT is stopped or "Voice OFF" while a voice
-    // subsystem is still active.
-    _updateVoiceStatus(voiceState) {
-        const voiceStatus = this._hudElement?.querySelector('.voice-status');
-        if (!voiceStatus) return;
-
-        const micIcon = voiceStatus.querySelector('.mic-icon');
-        const statusText = voiceStatus.querySelector('.voice-status-text');
-        if (!statusText) return;
-
-        const status = voiceState.status || VOICE_STATUS.OFF;
-        const wakeRunning = !!voiceState.isWakeDetectionRunning;
-
-        let text;
-        let cls;
-        let micActive = false;
-
-        switch (status) {
-            case VOICE_STATUS.LISTENING:
-                text = 'Listening...';
-                cls = 'voice-status listening';
-                micActive = true;
-                break;
-            case VOICE_STATUS.SPEAKING:
-                text = 'Speaking...';
-                cls = 'voice-status speaking';
-                break;
-            case VOICE_STATUS.PROCESSING:
-                text = 'Processing...';
-                cls = 'voice-status speaking'; // reuse existing style (no CSS changes in Stage 1A)
-                break;
-            case VOICE_STATUS.STOPPING:
-                text = 'Stopping...';
-                cls = 'voice-status inactive';
-                break;
-            case VOICE_STATUS.ERROR:
-                text = voiceState.statusDetail || 'Voice unavailable';
-                cls = 'voice-status error';
-                break;
-            case VOICE_STATUS.READY:
-                text = wakeRunning ? 'Say "Hey Alice"' : 'Voice ready';
-                cls = 'voice-status ready';
-                break;
-            case VOICE_STATUS.OFF:
-            default:
-                text = 'Voice OFF';
-                cls = 'voice-status inactive';
-                break;
-        }
-
-        statusText.textContent = text;
-        voiceStatus.className = cls;
-        if (micIcon) {
-            micIcon.classList.toggle('active', micActive);
-        }
-    }
-
-    _updateSkillDisplay(skillState) {
-        const skillStatus = this._hudElement?.querySelector('.skill-status');
-        if (!skillStatus) return;
-
-        const skillIcon = skillStatus.querySelector('.skill-icon');
-        const skillName = skillStatus.querySelector('.skill-name');
-        const skillProgress = skillStatus.querySelector('.skill-progress');
-        
-        const currentSkill = skillState.currentSkill;
-        
-        if (currentSkill) {
-            skillIcon.textContent = this._getSkillIcon(currentSkill);
-            skillName.textContent = currentSkill.charAt(0).toUpperCase() + currentSkill.slice(1);
-            skillStatus.className = 'skill-status active';
-            skillProgress.style.width = '100%';
-        } else {
-            skillIcon.textContent = '◆';
-            skillName.textContent = 'Ready';
-            skillStatus.className = 'skill-status';
-            skillProgress.style.width = '0%';
-        }
-    }
-
-    _getSkillIcon(skillName) {
-        const icons = {
-            calculator: '∑',
-            websearch: '🔍',
-            notes: '📝',
-            reminders: '⏰',
-            datetime: '🕐',
-            files: '📁',
-            reader: '📖',
-            memory: '🧠'
-        };
-        return icons[skillName] || '◈';
-    }
+    // ------------------------------------------------------------------
+    // State transition
+    // ------------------------------------------------------------------
 
     _transitionState(from, to) {
         const hud = this._hudElement;
@@ -624,52 +643,109 @@ class ALICEHUD {
         const stateIndicator = hud.querySelector('.state-indicator');
         const stateText = hud.querySelector('.state-text');
         const statusBadge = hud.querySelector('.status-badge');
+        const orb = hud.querySelector('.alice-orb');
         
         if (stateIndicator) {
             stateIndicator.className = `state-indicator ${to.toLowerCase()}`;
         }
         
         if (stateText) {
-            stateText.textContent = to;
+            stateText.textContent = this._getStateLabel(to);
         }
         
         if (statusBadge) {
-            statusBadge.className = `status-badge ${to.toLowerCase()}`;
+            statusBadge.className = `hud-status-badge ${to.toLowerCase()} status-badge`;
             statusBadge.textContent = this._getStateLabel(to);
         }
 
-        // Update orb state
-        const orb = hud.querySelector('.alice-orb');
         if (orb) {
             orb.className = `alice-orb ${to.toLowerCase()}`;
         }
-        
-        // Update voice status
-        this._updateVoiceStatus(state.getVoiceState());
 
-        // Update skill display if transitioning to/from skill states
-        if (to === 'UNDERSTANDING' || to === 'SELECTING_TOOL' || to === 'EXECUTING' || to === 'COMPLETING') {
-            this._updateSkillDisplay(state.getSkillState());
-        }
+        // Update prompt text based on state
+        this._updatePromptForState(to);
 
-        state.logActivity(`State changed: ${from} → ${to}`, 'info');
+        // Update voice buttons
+        this._updateVoiceButtons(state.getVoiceState());
+
+        state.logActivity(`State: ${from} → ${to}`, 'info');
     }
 
-    _getStateLabel(state) {
+    _getStateLabel(aliceState) {
         const labels = {
             IDLE: 'Ready',
             LISTENING: 'Listening',
-            PROCESSING: 'Processing',
+            PROCESSING: 'Understanding',
             SPEAKING: 'Speaking',
             EXECUTING: 'Executing',
             UNDERSTANDING: 'Understanding',
-            SELECTING_TOOL: 'Selecting Tool',
+            SELECTING_TOOL: 'Working',
             COMPLETING: 'Completing',
             PLANNING: 'Planning',
-            WAITING: 'Awaiting Input'
+            WAITING: 'Awaiting input'
         };
-        return labels[state] || state;
+        return labels[aliceState] || aliceState;
     }
+
+    _updatePromptForState(aliceState) {
+        const prompts = {
+            IDLE: 'What can I do for you?',
+            LISTENING: 'I\'m listening...',
+            PROCESSING: 'Let me think about that...',
+            SPEAKING: '',
+            EXECUTING: 'Working on it...',
+            UNDERSTANDING: 'Understanding your request...',
+            SELECTING_TOOL: 'Finding the right tool...',
+            COMPLETING: 'Almost done...',
+            PLANNING: 'Planning the steps...',
+            WAITING: 'Waiting for your response...'
+        };
+
+        const prompt = prompts[aliceState];
+        if (prompt) {
+            this._showPrompt(prompt);
+        } else {
+            this._hidePrompt();
+        }
+    }
+
+    _showPrompt(text) {
+        const promptEl = this._hudElement?.querySelector('.alice-prompt');
+        const textEl = this._hudElement?.querySelector('.alice-prompt-text');
+        if (!promptEl || !textEl) return;
+        
+        textEl.textContent = text;
+        promptEl.classList.add('visible');
+        this._promptVisible = true;
+    }
+
+    _hidePrompt() {
+        const promptEl = this._hudElement?.querySelector('.alice-prompt');
+        if (!promptEl) return;
+        promptEl.classList.remove('visible');
+        this._promptVisible = false;
+    }
+
+    // ------------------------------------------------------------------
+    // Transcript overlay (shows current speech input)
+    // ------------------------------------------------------------------
+
+    _updateTranscriptOverlay(text) {
+        const overlay = this._hudElement?.querySelector('#transcript-overlay');
+        const textEl = this._hudElement?.querySelector('#transcript-text');
+        if (!overlay || !textEl) return;
+
+        if (text && text.length > 0) {
+            textEl.textContent = text;
+            overlay.classList.add('visible');
+        } else {
+            overlay.classList.remove('visible');
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Render loop
+    // ------------------------------------------------------------------
 
     _startRenderLoop() {
         const render = () => {
@@ -679,76 +755,59 @@ class ALICEHUD {
         render();
     }
 
+    // ------------------------------------------------------------------
+    // Time display
+    // ------------------------------------------------------------------
+
     _updateTimeDisplay() {
         const timeEl = this._hudElement?.querySelector('.time-display');
-        const dateEl = this._hudElement?.querySelector('.date-display');
         const currentTime = state.get('currentTime');
         
-        if (timeEl) timeEl.textContent = formatTime(currentTime);
-        if (dateEl) dateEl.textContent = formatDate(currentTime);
+        if (timeEl) {
+            timeEl.textContent = formatTime(currentTime).replace(/:00$/, '');
+        }
     }
 
-    _updateMetricsDisplay() {
+    // ------------------------------------------------------------------
+    // Debug panel updates
+    // ------------------------------------------------------------------
+
+    _updateDebugMetrics() {
         const metrics = state.get('systemMetrics');
         
-        // Update CPU
-        const cpuBar = this._hudElement?.querySelector('.metric-cpu .metric-bar');
-        const cpuValue = this._hudElement?.querySelector('.metric-cpu .metric-value');
-        if (cpuBar) cpuBar.style.width = `${metrics.cpu}%`;
-        if (cpuValue) cpuValue.textContent = `${Math.round(metrics.cpu)}%`;
-
-        // Update Memory
-        const memBar = this._hudElement?.querySelector('.metric-memory .metric-bar');
-        const memValue = this._hudElement?.querySelector('.metric-memory .metric-value');
-        if (memBar) memBar.style.width = `${metrics.memory}%`;
-        if (memValue) memValue.textContent = `${Math.round(metrics.memory)}%`;
-
-        // Update Network
-        const netBar = this._hudElement?.querySelector('.metric-network .metric-bar');
-        const netValue = this._hudElement?.querySelector('.metric-network .metric-value');
-        if (netBar) netBar.style.width = `${metrics.network}%`;
-        if (netValue) netValue.textContent = `${Math.round(metrics.network)}%`;
+        const cpuEl = document.querySelector('.debug-cpu');
+        const memEl = document.querySelector('.debug-mem');
+        const netEl = document.querySelector('.debug-net');
+        
+        if (cpuEl) cpuEl.textContent = `${Math.round(metrics.cpu)}%`;
+        if (memEl) memEl.textContent = `${Math.round(metrics.memory)}%`;
+        if (netEl) netEl.textContent = `${Math.round(metrics.network)}%`;
     }
 
-    _updateActivityLog() {
-        const logContainer = this._hudElement?.querySelector('.activity-log-content');
-        if (!logContainer) return;
+    _updateDebugActivityLog() {
+        const container = document.getElementById('debug-activity-log');
+        if (!container) return;
 
         const logs = state.get('activityLog');
-        const html = logs.slice(0, 10).map(log => {
+        const html = logs.slice(0, 15).map(log => {
             const time = log.timestamp.toLocaleTimeString('en-US', { 
                 hour: '2-digit', 
                 minute: '2-digit',
                 second: '2-digit'
             });
-            return `
-                <div class="activity-item ${log.type}">
-                    <span class="activity-time">${time}</span>
-                    <span class="activity-message">${log.message}</span>
-                </div>
-            `;
+            return `<div style="padding:1px 0;border-bottom:1px solid rgba(255,255,255,0.03);">
+                <span style="color:var(--text-faint);">${time}</span> 
+                <span style="color:${log.type === 'success' ? 'var(--accent)' : log.type === 'warning' ? 'var(--warning)' : log.type === 'danger' ? 'var(--danger)' : 'var(--text-dim)'};">${escapeHtml(log.message)}</span>
+            </div>`;
         }).join('');
 
-        logContainer.innerHTML = html || '<div class="activity-empty">No recent activity</div>';
+        container.innerHTML = html || '<div style="color:var(--text-faint);">No activity</div>';
     }
 
-    _updateTranscriptDisplay(text) {
-        const transcriptEl = this._hudElement?.querySelector('.transcript-display');
-        if (transcriptEl) {
-            transcriptEl.textContent = text || '';
-            transcriptEl.classList.toggle('visible', text.length > 0);
-        }
-    }
+    // ------------------------------------------------------------------
+    // Public API
+    // ------------------------------------------------------------------
 
-    _updateResponseDisplay(text) {
-        const responseEl = this._hudElement?.querySelector('.response-display');
-        if (responseEl) {
-            responseEl.textContent = text || '';
-            responseEl.classList.toggle('visible', text.length > 0);
-        }
-    }
-
-    // Public methods
     setState(newState) {
         state.set('aliceState', newState);
     }
