@@ -8,21 +8,41 @@
 //   E) STOP while listening  → stopped, no stale STT restart
 //   F) STOP while speaking   → stopped, no wake resurrection
 //   G) STOP while wake armed → stopped, mic released, no auto-restart
-//   H) Voice disable   → OFF, TTS end cannot restart wake
+//   H) Voice disable   — OFF, TTS end cannot restart wake
 //   I) Permission denied → Voice unavailable, text still works
 //   J) Settings        — single coherent settings structure (duplicate fixed)
 //   K) Race guards     — Stop during the 300 ms STT start delay
+//   L) getUserMedia race — Stop while capture pending; late stream disposed;
+//                          Stop → re-enable → capture works normally
+//   M) Boot honesty    — boot never claims voice/microphone are online
+//   N) Settings schema — init() preserves every group incl. older storage
+//   O) Voice authority — App/UI modules never write the voice lifecycle
 //
 // No production behavior is changed by this file.
 
 import { setTimeout as delay } from 'node:timers/promises';
+import { readFileSync } from 'node:fs';
+
+// Node's real URL constructor, captured before globalThis.URL is replaced
+// by the browser mock below (section O resolves source files with it).
+const NodeURL = globalThis.URL;
 
 // --- Controllable mocks -----------------------------------------------------
 
 let micDenied = false;
 let getUserMediaCalls = 0;
-const trackStops = [];
-const fakeStream = () => ({ getTracks: () => [{ stop() { trackStops.push(1); } }] });
+// 'instant' resolves immediately; 'deferred' parks the promise until the
+// test resolves it — used to reproduce the getUserMedia/Stop race.
+let micMode = 'instant';
+const pendingMicResolvers = [];
+// Every fake MediaStream handed out is tracked so tests can verify that
+// stale streams get their tracks stopped and are never retained.
+const createdStreams = [];
+const fakeStream = () => {
+    const s = { tracksStopped: false, getTracks: () => [{ stop() { s.tracksStopped = true; } }] };
+    createdStreams.push(s);
+    return s;
+};
 
 class MockSpeechRecognition {
     static instances = [];
@@ -113,6 +133,9 @@ Object.defineProperty(globalThis, 'navigator', {
                     const e = new Error('Permission denied');
                     e.name = 'NotAllowedError';
                     throw e;
+                }
+                if (micMode === 'deferred') {
+                    return await new Promise((resolve) => pendingMicResolvers.push(resolve));
                 }
                 return fakeStream();
             }
@@ -224,7 +247,7 @@ check('no microphone was captured for a text command', audioManager.isCapturing(
 console.log('C) Mic enable — permission granted → Voice READY');
 click('mic-toggle');
 await delay(120); // conversation.init() + wake start
-check('permission was requested exactly once', getUserMediaCalls >= 1);
+check('microphone acquisition ran on enable', getUserMediaCalls >= 1);
 check('voice status READY after enable', voiceStatus() === VOICE_STATUS.READY);
 check('conversation active', conversation.isActive() === true);
 check('wake detection armed', wakeWordDetector.isRunning() === true);
@@ -321,6 +344,9 @@ check('TTS end with voice disabled never arms wake', wakeWordDetector.isRunning(
 
 // ============================================================================
 console.log('I) Permission denied — Voice unavailable, text still works');
+// Simulate a fresh session where permission was never granted (the cached
+// grant from section C is cleared the way a new page load would clear it).
+audioManager._permissionStatus = 'prompt';
 micDenied = true;
 click('mic-toggle');
 await delay(80);
@@ -359,6 +385,113 @@ await delay(500); // the delayed stt.start() would fire here if unguarded
 check('STT never started after Stop inside start delay', stt.hasActiveSession() === false && stt.isListening() === false);
 check('status stays consistent after racy Stop', voiceStatus() === VOICE_STATUS.READY);
 check('wake not started after racy Stop', wakeWordDetector.isRunning() === false);
+
+// ============================================================================
+console.log('L) getUserMedia / Stop race — a late stream can never resurrect the mic');
+click('mic-toggle'); // OFF (voice was re-enabled in section K)
+await delay(30);
+check('voice disabled before race test', voiceStatus() === VOICE_STATUS.OFF && !audioManager.isCapturing());
+micMode = 'deferred';
+click('mic-toggle'); // ON — enable flow parks inside a pending getUserMedia
+await delay(60);
+check('a capture acquisition is pending', pendingMicResolvers.length === 1);
+check('wake not running while capture still pending', wakeWordDetector.isRunning() === false);
+click('voice-stop-btn'); // STOP while getUserMedia() is unresolved
+await delay(30);
+check('stop during pending capture leaves no active stream', audioManager.getStream() === null);
+const lateStream = fakeStream();
+pendingMicResolvers.shift()(lateStream); // getUserMedia resolves AFTER Stop
+await delay(60);
+check('late stream tracks were stopped immediately', lateStream.tracksStopped === true);
+check('late stream was NOT retained as the active stream', audioManager.getStream() === null);
+check('capture remains inactive after the stale resolve', audioManager.isCapturing() === false);
+check('voice did not resurrect after Stop', wakeWordDetector.isRunning() === false);
+check('lifecycle stays in a valid idle state', [VOICE_STATUS.READY, VOICE_STATUS.OFF].includes(voiceStatus()));
+// Stop → enable voice again → capture must work normally
+micMode = 'instant';
+click('mic-toggle'); // OFF if the enable flow completed into idle-active
+await delay(30);
+check('explicit disable before re-enable', voiceStatus() === VOICE_STATUS.OFF && !audioManager.isCapturing());
+click('mic-toggle'); // ON — fresh acquisition
+await delay(150);
+check('re-enable after Stop: capture works normally', audioManager.isCapturing() === true);
+check('re-enable after Stop: wake armed again', wakeWordDetector.isRunning() === true);
+check('re-enable after Stop: Voice READY', voiceStatus() === VOICE_STATUS.READY);
+
+// ============================================================================
+console.log('M) Boot completion is truthful about voice/microphone');
+const { bootSequence } = await import('../js/boot.js');
+const bootStatusEl = fakeElement();
+const bootItemEls = {}; // id -> { itemEl, statusEl }
+const bootItemsContainer = fakeElement();
+bootItemsContainer.querySelector = (sel) => {
+    const m = /^\[data-item-id="(.+)"\]$/.exec(sel);
+    if (m) {
+        const id = m[1];
+        if (!bootItemEls[id]) {
+            const itemEl = fakeElement();
+            const statusEl = fakeElement();
+            itemEl.querySelector = (childSel) => {
+                if (childSel === '.boot-item-status') return statusEl;
+                return fakeElement(); // icon etc.
+            };
+            bootItemEls[id] = { itemEl, statusEl };
+        }
+        return bootItemEls[id].itemEl;
+    }
+    return fakeElement();
+};
+const bootScreen = fakeElement();
+bootScreen.querySelector = (sel) => {
+    if (sel === '.boot-status-text') return bootStatusEl;
+    if (sel === '.boot-items') return bootItemsContainer;
+    return fakeElement(); // progress bar etc.
+};
+const gmBeforeBoot = getUserMediaCalls;
+const statusBeforeBoot = voiceStatus();
+const wakeBeforeBoot = wakeWordDetector.isRunning();
+const bootResult = await bootSequence.start(bootScreen);
+check('boot sequence completes', bootResult === true);
+check('boot final status does NOT claim all systems online', !/all systems online/i.test(bootStatusEl.textContent));
+check('boot final status reports voice on standby', /standby/i.test(bootStatusEl.textContent));
+check('voice-related boot items report Standby', ['audio', 'voice', 'tts'].every(id => bootItemEls[id]?.statusEl.textContent === 'Standby'));
+check('core boot items still report Online', bootItemEls['core']?.statusEl.textContent === 'Online');
+check('boot requested no microphone access', getUserMediaCalls === gmBeforeBoot);
+check('boot did not start wake detection', wakeWordDetector.isRunning() === wakeBeforeBoot);
+check('boot left the voice lifecycle untouched', voiceStatus() === statusBeforeBoot);
+
+// ============================================================================
+console.log('N) Settings schema preservation across init() and older storage');
+// Simulate an older stored settings blob WITHOUT the ui group
+localStorage.setItem('alice_settings', JSON.stringify({
+    proactive: { level: 'high' },
+    features: { vision: false },
+    skills: { calculator: false }
+}));
+settings._loaded = false;
+settings.init();
+const s2 = state.getSettings();
+check('older storage: ui group restored from defaults', !!s2.ui && s2.ui.soundEnabled === true && s2.ui.animationsEnabled === true && s2.ui.voiceFeedback === true);
+check('older storage: stored proactive value preserved', s2.proactive.level === 'high' && s2.proactive.enabled === true);
+check('older storage: stored feature values preserved', s2.features.vision === false && s2.features.browser === true);
+check('older storage: stored skill toggles preserved', s2.skills.calculator === false);
+check('no settings group was dropped', ['ui', 'proactive', 'features', 'skills'].every(g => g in state.getSettings()));
+// Restore neutral values for cleanliness
+settings.setSkillEnabled('calculator', true);
+settings.set('proactive', 'level', 'moderate');
+settings.set('features', 'vision', true);
+
+// ============================================================================
+console.log('O) Voice-lifecycle authority stays inside ConversationManager');
+const appSrc = readFileSync(new NodeURL('../js/app.js', import.meta.url), 'utf8');
+const hudSrc = readFileSync(new NodeURL('../js/hud.js', import.meta.url), 'utf8');
+const lifecycleWrites = /setVoiceStatus\s*\(|setVoiceState\s*\(/;
+check('app.js performs no direct voice lifecycle writes', !lifecycleWrites.test(appSrc));
+check('hud.js performs no direct voice lifecycle writes', !lifecycleWrites.test(hudSrc));
+check('Mic enable routes through conversation.enableVoice()', /conversation\.enableVoice\(\)/.test(appSrc));
+check('Stop routes through conversation.stopAllActivity()', /conversation\.stopAllActivity\(\)/.test(appSrc));
+check('Mic disable routes through conversation.stop()', /conversation\.stop\(\)/.test(appSrc));
+check('HUD entry routes through conversation.syncBootState()', /conversation\.syncBootState\(\)/.test(appSrc));
 
 // ============================================================================
 console.log(`\n${pass} passed, ${fail} failed`);
