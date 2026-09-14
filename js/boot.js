@@ -120,9 +120,11 @@ class BootSequence {
             progressBar.style.width = '100%';
         }
         
-        // Update final status
+        // Update final status. Truthful wording (Stage 1A): core systems
+        // are ready, but voice/microphone are on STANDBY — they are only
+        // started when the user explicitly enables the microphone.
         if (statusText) {
-            statusText.textContent = 'All systems online';
+            statusText.textContent = 'Core systems ready — voice systems on standby';
             statusText.classList.add('complete');
         }
 
