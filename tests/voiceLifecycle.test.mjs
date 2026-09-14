@@ -17,6 +17,9 @@
 //   M) Boot honesty    — boot never claims voice/microphone are online
 //   N) Settings schema — init() preserves every group incl. older storage
 //   O) Voice authority — App/UI modules never write the voice lifecycle
+//   P) Permission race — Stop while permission pending; stale grant cannot
+//                        resurrect voice; re-enable works afterwards
+//   Q) Capture concurrency — parallel startCapture() shares ONE stream
 //
 // No production behavior is changed by this file.
 
@@ -95,7 +98,8 @@ const synthMock = {
 };
 
 class MockAudioContext {
-    constructor() {}
+    static created = 0;
+    constructor() { MockAudioContext.created++; }
     createMediaStreamSource() { return { connect() {} }; }
     createAnalyser() {
         return {
@@ -400,10 +404,12 @@ click('voice-stop-btn'); // STOP while getUserMedia() is unresolved
 await delay(30);
 check('stop during pending capture leaves no active stream', audioManager.getStream() === null);
 const lateStream = fakeStream();
+const acBeforeStaleResolve = MockAudioContext.created;
 pendingMicResolvers.shift()(lateStream); // getUserMedia resolves AFTER Stop
 await delay(60);
 check('late stream tracks were stopped immediately', lateStream.tracksStopped === true);
 check('late stream was NOT retained as the active stream', audioManager.getStream() === null);
+check('no stale AudioContext created from the late stream', MockAudioContext.created === acBeforeStaleResolve);
 check('capture remains inactive after the stale resolve', audioManager.isCapturing() === false);
 check('voice did not resurrect after Stop', wakeWordDetector.isRunning() === false);
 check('lifecycle stays in a valid idle state', [VOICE_STATUS.READY, VOICE_STATUS.OFF].includes(voiceStatus()));
@@ -492,6 +498,50 @@ check('Mic enable routes through conversation.enableVoice()', /conversation\.ena
 check('Stop routes through conversation.stopAllActivity()', /conversation\.stopAllActivity\(\)/.test(appSrc));
 check('Mic disable routes through conversation.stop()', /conversation\.stop\(\)/.test(appSrc));
 check('HUD entry routes through conversation.syncBootState()', /conversation\.syncBootState\(\)/.test(appSrc));
+
+// ============================================================================
+console.log('P) Stop while PERMISSION acquisition is pending cannot resurrect voice');
+// End of section L left voice READY/active — disable it first.
+click('mic-toggle'); // OFF
+await delay(30);
+check('voice disabled before permission race', voiceStatus() === VOICE_STATUS.OFF && !audioManager.isCapturing());
+audioManager._permissionStatus = 'prompt'; // force the first-time prompt path
+micMode = 'deferred';
+click('mic-toggle'); // ON — enable flow parks inside requestPermission()
+await delay(60);
+check('permission acquisition is pending', pendingMicResolvers.length === 1);
+check('voice not active while permission still pending', conversation.isActive() === false && voiceStatus() === VOICE_STATUS.OFF);
+click('voice-stop-btn'); // STOP while permission is unresolved
+await delay(30);
+const permStream = fakeStream();
+const acBeforePermResolve = MockAudioContext.created;
+pendingMicResolvers.shift()(permStream); // permission getUserMedia resolves AFTER Stop
+await delay(80);
+check('permission prompt stream tracks were released', permStream.tracksStopped === true);
+check('stale permission grant did NOT activate voice', conversation.isActive() === false);
+check('voice stays OFF after stale permission resolve', voiceStatus() === VOICE_STATUS.OFF);
+check('no capture started by the stale enable flow', audioManager.isCapturing() === false);
+check('no AudioContext created by the stale enable flow', MockAudioContext.created === acBeforePermResolve);
+check('no wake detection started by the stale enable flow', wakeWordDetector.isRunning() === false);
+check('no STT session started by the stale enable flow', stt.hasActiveSession() === false && stt.isListening() === false);
+// Full round trip: enabling again after the aborted flow works normally
+micMode = 'instant';
+click('mic-toggle'); // ON — permission is cached granted now
+await delay(150);
+check('voice fully functional after aborted enable', voiceStatus() === VOICE_STATUS.READY && audioManager.isCapturing() === true && wakeWordDetector.isRunning() === true);
+
+// ============================================================================
+console.log('Q) Concurrent capture requests cannot duplicate microphone streams');
+click('mic-toggle'); // OFF so capture is inactive
+await delay(30);
+check('capture inactive before concurrency test', audioManager.isCapturing() === false);
+const gmBeforeConcurrent = getUserMediaCalls;
+const [capA, capB] = await Promise.all([audioManager.startCapture(), audioManager.startCapture()]);
+check('concurrent startCapture callers share one stream', capA !== null && capA === capB);
+check('exactly ONE getUserMedia for concurrent capture requests', getUserMediaCalls === gmBeforeConcurrent + 1);
+check('capture active exactly once', audioManager.isCapturing() === true);
+audioManager.stopCapture();
+check('cleanup: capture stopped after concurrency test', audioManager.isCapturing() === false);
 
 // ============================================================================
 console.log(`\n${pass} passed, ${fail} failed`);

@@ -266,7 +266,7 @@ node tests/part5.test.mjs   # Part 5: plugins, memory, settings, IoT, dev, secur
 node tests/gateway.test.mjs # Phase 6.3.1 secure local AI gateway (44 checks)
 node tests/httpModelAdapter.test.mjs # Phase 6.3.2 HTTP model adapter (140 checks)
 node tests/realProvider.test.mjs     # Phase 6.3.3 real provider connection (201 checks)
-node tests/voiceLifecycle.test.mjs   # Stage 1A voice lifecycle / Stop / races / capture-race / boot / settings (98 checks)
+node tests/voiceLifecycle.test.mjs   # Stage 1A voice lifecycle / Stop / races / capture-race / boot / settings (115 checks)
 node tests/load.test.mjs    # verifies all 43 modules import without errors
 
 # or run every suite at once
