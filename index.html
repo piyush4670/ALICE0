@@ -202,23 +202,23 @@
                         <span class="hud-panel-title">Voice Controls</span>
                     </div>
                     
-                    <!-- Voice Status Indicator -->
+                    <!-- Voice Status Indicator (renders voice.status from state) -->
                     <div class="voice-status inactive">
                         <span class="mic-icon">🎤</span>
-                        <span class="voice-status-text">Initializing...</span>
+                        <span class="voice-status-text">Voice OFF</span>
                     </div>
-                    
+
                     <!-- Voice Control Buttons -->
                     <div class="voice-controls">
-                        <button class="voice-btn primary" id="voice-wake-btn" type="button" title="Wake ALICE">
+                        <button class="voice-btn primary" id="voice-wake-btn" type="button" title="Wake ALICE (manual activation)">
                             <span class="voice-btn-icon">👋</span>
                             <span class="voice-btn-label">Wake</span>
                         </button>
-                        <button class="voice-btn" id="voice-stop-btn" type="button" title="Stop speaking">
+                        <button class="voice-btn" id="voice-stop-btn" type="button" title="Stop all voice activity (listening, speaking, wake)">
                             <span class="voice-btn-icon">⏹</span>
                             <span class="voice-btn-label">Stop</span>
                         </button>
-                        <button class="voice-btn" id="mic-toggle" type="button" title="Toggle microphone">
+                        <button class="voice-btn" id="mic-toggle" type="button" title="Enable / disable voice (requests microphone permission)">
                             <span class="voice-btn-icon">🎙</span>
                             <span class="voice-btn-label">Mic</span>
                         </button>

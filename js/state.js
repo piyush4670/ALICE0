@@ -4,6 +4,7 @@
  */
 import { CONFIG } from './config.js';
 import { redact } from './utils.js';
+import { VOICE_STATUS } from './voiceStatus.js';
 
 class StateManager {
     constructor() {
@@ -22,16 +23,17 @@ class StateManager {
                 memory: 0,
                 network: 0
             },
-            settings: {
-                soundEnabled: true,
-                animationsEnabled: true,
-                voiceFeedback: true
-            },
             // Voice-related state (Part 2)
             voice: {
+                // Single source of truth for the voice lifecycle (Stage 1A).
+                // OFF | READY | LISTENING | PROCESSING | SPEAKING | STOPPING | ERROR
+                status: VOICE_STATUS.OFF,
+                // Human-readable detail for the current status (e.g. error cause)
+                statusDetail: '',
                 isActive: false,
                 isListening: false,
                 isWakeWordEnabled: true,
+                isWakeDetectionRunning: false,
                 isMicrophoneAvailable: false,
                 isMicrophonePermission: false,
                 currentTranscript: '',
@@ -61,7 +63,13 @@ class StateManager {
             lastReadDocument: null,
             // Part 5
             notifications: [],
+            // NOTE: there must be exactly ONE `settings` key in this initial
+            // state. A legacy duplicate declaration (soundEnabled /
+            // animationsEnabled / voiceFeedback) was silently shadowed by the
+            // object literal and has been folded into the `ui` group below so
+            // the structure stays coherent (Stage 1A).
             settings: {
+                ui: { soundEnabled: true, animationsEnabled: true, voiceFeedback: true },
                 proactive: { enabled: true, level: 'moderate' },
                 features: { vision: true, browser: true, iot: true, dev: true },
                 skills: {}
@@ -182,6 +190,14 @@ class StateManager {
     // Voice state methods
     setVoiceState(key, value) {
         this._state.voice[key] = value;
+        this._notify('voice', this._state.voice);
+    }
+
+    // Voice lifecycle status (Stage 1A). Only the ConversationManager should
+    // transition this; the HUD merely renders it.
+    setVoiceStatus(status, detail = '') {
+        this._state.voice.status = status;
+        this._state.voice.statusDetail = detail;
         this._notify('voice', this._state.voice);
     }
 

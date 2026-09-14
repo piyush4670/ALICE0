@@ -5,6 +5,7 @@
  */
 import { CONFIG } from './config.js';
 import { state } from './state.js';
+import { VOICE_STATUS } from './voiceStatus.js';
 import { audioManager } from './audio.js';
 import { formatTime, formatDate, escapeHtml } from './utils.js';
 import { taskDashboard } from './taskDashboard.js';
@@ -229,11 +230,15 @@ class ALICEHUD {
         if (voiceStatus) {
             this._voiceIndicatorElement = voiceStatus;
         }
-        
+
         // Update voice status based on state
         state.subscribe('voice', (voiceState) => {
             this._updateVoiceStatus(voiceState);
         });
+
+        // Render the current status immediately so the HUD opens in sync
+        // with state (Stage 1A: "Voice OFF" until the user enables it).
+        this._updateVoiceStatus(state.getVoiceState());
     }
 
     _setupSkillUI() {
@@ -514,35 +519,63 @@ class ALICEHUD {
         }
     }
 
+    // Stage 1A: the voice indicator is a PURE render of `voice.status`
+    // (single source of truth owned by the ConversationManager). The HUD
+    // never guesses listening/speaking state on its own, so it can never
+    // show "Listening" while STT is stopped or "Voice OFF" while a voice
+    // subsystem is still active.
     _updateVoiceStatus(voiceState) {
         const voiceStatus = this._hudElement?.querySelector('.voice-status');
         if (!voiceStatus) return;
-        
+
         const micIcon = voiceStatus.querySelector('.mic-icon');
         const statusText = voiceStatus.querySelector('.voice-status-text');
-        
-        if (voiceState.isActive && voiceState.isMicrophonePermission) {
-            if (voiceState.isListening) {
-                statusText.textContent = 'Listening...';
-                voiceStatus.className = 'voice-status listening';
-                micIcon?.classList.add('active');
-            } else if (state.get('aliceState') === 'SPEAKING') {
-                statusText.textContent = 'Speaking...';
-                voiceStatus.className = 'voice-status speaking';
-                micIcon?.classList.remove('active');
-            } else {
-                statusText.textContent = 'Say "Hey Alice"';
-                voiceStatus.className = 'voice-status ready';
-                micIcon?.classList.remove('active');
-            }
-        } else if (!voiceState.isMicrophonePermission) {
-            statusText.textContent = 'Mic denied';
-            voiceStatus.className = 'voice-status error';
-            micIcon?.classList.remove('active');
-        } else {
-            statusText.textContent = 'Voice off';
-            voiceStatus.className = 'voice-status inactive';
-            micIcon?.classList.remove('active');
+        if (!statusText) return;
+
+        const status = voiceState.status || VOICE_STATUS.OFF;
+        const wakeRunning = !!voiceState.isWakeDetectionRunning;
+
+        let text;
+        let cls;
+        let micActive = false;
+
+        switch (status) {
+            case VOICE_STATUS.LISTENING:
+                text = 'Listening...';
+                cls = 'voice-status listening';
+                micActive = true;
+                break;
+            case VOICE_STATUS.SPEAKING:
+                text = 'Speaking...';
+                cls = 'voice-status speaking';
+                break;
+            case VOICE_STATUS.PROCESSING:
+                text = 'Processing...';
+                cls = 'voice-status speaking'; // reuse existing style (no CSS changes in Stage 1A)
+                break;
+            case VOICE_STATUS.STOPPING:
+                text = 'Stopping...';
+                cls = 'voice-status inactive';
+                break;
+            case VOICE_STATUS.ERROR:
+                text = voiceState.statusDetail || 'Voice unavailable';
+                cls = 'voice-status error';
+                break;
+            case VOICE_STATUS.READY:
+                text = wakeRunning ? 'Say "Hey Alice"' : 'Voice ready';
+                cls = 'voice-status ready';
+                break;
+            case VOICE_STATUS.OFF:
+            default:
+                text = 'Voice OFF';
+                cls = 'voice-status inactive';
+                break;
+        }
+
+        statusText.textContent = text;
+        voiceStatus.className = cls;
+        if (micIcon) {
+            micIcon.classList.toggle('active', micActive);
         }
     }
 

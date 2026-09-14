@@ -88,9 +88,13 @@ export const CONFIG = {
     },
 
     // Settings (Part 5)
+    // `defaults` is the single canonical settings schema (Stage 1A): every
+    // group that must exist after settings.init() is declared here, and
+    // settings.js merges stored values on top of it group-by-group.
     settings: {
         storageKey: 'alice_settings',
         defaults: {
+            ui: { soundEnabled: true, animationsEnabled: true, voiceFeedback: true },
             proactive: { enabled: true, level: 'moderate' },
             features: { vision: true, browser: true, iot: true, dev: true },
             skills: {} // populated at runtime (all enabled by default)

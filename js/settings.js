@@ -19,6 +19,18 @@ class SettingsManager {
 
     /**
      * Load settings from storage and apply them to subsystems.
+     *
+     * Stage 1A schema-preservation fix: instead of rebuilding a fixed list
+     * of groups (which discarded any other group such as `ui`), the current
+     * default schema from CONFIG.settings.defaults is taken as the source of
+     * truth and stored values are merged group-by-group on top of it. This
+     * means:
+     *   - every required group exists after init() (missing groups are
+     *     restored from defaults, even when loading older stored settings),
+     *   - compatible stored values are preserved,
+     *   - nothing already present in the live state is dropped, because
+     *     state.setSettings() merges into the existing object.
+     * localStorage compatibility is unchanged (same key, same JSON shape).
      */
     init() {
         if (this._loaded) return;
@@ -26,11 +38,22 @@ class SettingsManager {
 
         const stored = this._readStorage();
         const defaults = CONFIG.settings.defaults;
-        const settings = {
-            proactive: { ...defaults.proactive, ...(stored.proactive || {}) },
-            features: { ...defaults.features, ...(stored.features || {}) },
-            skills: { ...(stored.skills || {}) }
-        };
+
+        const settings = {};
+        for (const group of Object.keys(defaults)) {
+            const def = defaults[group];
+            const saved = stored ? stored[group] : undefined;
+            const savedIsObject = saved && typeof saved === 'object' && !Array.isArray(saved);
+
+            if (def && typeof def === 'object' && !Array.isArray(def)) {
+                // Merge stored values over the default group so missing keys
+                // fall back to defaults instead of vanishing.
+                settings[group] = { ...def, ...(savedIsObject ? saved : {}) };
+            } else {
+                // Scalar groups: prefer a compatible stored value.
+                settings[group] = saved !== undefined ? saved : def;
+            }
+        }
 
         state.setSettings(settings);
         this._apply();

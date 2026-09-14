@@ -9,13 +9,18 @@ class STTAdapter {
     constructor() {
         this._recognition = null;
         this._isListening = false;
+        // True from the moment start() is requested until the session's
+        // `onend` fires. Web Speech `onstart` is asynchronous, so guarding
+        // stop() with `_isListening` alone allowed a zombie session to come
+        // up after Stop was pressed (Stage 1A race fix).
+        this._sessionActive = false;
         this._onResult = null;
         this._onError = null;
         this._onStart = null;
         this._onEnd = null;
         this._continuousMode = false;
         this._interimResults = true;
-        
+
         this._initRecognition();
     }
 
@@ -38,6 +43,7 @@ class STTAdapter {
 
         this._recognition.onstart = () => {
             this._isListening = true;
+            this._sessionActive = true;
             state.logActivity('Speech recognition started', 'success');
             if (this._onStart) this._onStart();
         };
@@ -87,8 +93,9 @@ class STTAdapter {
 
         this._recognition.onend = () => {
             this._isListening = false;
+            this._sessionActive = false;
             state.logActivity('Speech recognition ended', 'info');
-            
+
             if (this._onEnd) {
                 this._onEnd();
             }
@@ -148,24 +155,30 @@ class STTAdapter {
             return false;
         }
 
-        if (this._isListening) {
+        // Guard on the full session window (start requested → onend), not
+        // just on `_isListening`, so we never double-start a session.
+        if (this._sessionActive || this._isListening) {
             return false;
         }
 
         try {
+            this._sessionActive = true;
             this._recognition.start();
             return true;
         } catch (error) {
+            this._sessionActive = false;
             state.logActivity(`Failed to start recognition: ${error.message}`, 'danger');
             return false;
         }
     }
 
     /**
-     * Stop listening
+     * Stop listening. Works even while a session is still coming up
+     * (`onstart` has not fired yet) — the session is torn down instead of
+     * being allowed to go live after Stop (Stage 1A race fix).
      */
     stop() {
-        if (!this._recognition || !this._isListening) {
+        if (!this._recognition || !this._sessionActive) {
             return;
         }
 
@@ -173,6 +186,8 @@ class STTAdapter {
             this._recognition.stop();
         } catch (error) {
             // Ignore - may not be running
+            this._sessionActive = false;
+            this._isListening = false;
         }
     }
 
@@ -181,21 +196,31 @@ class STTAdapter {
      */
     abort() {
         if (!this._recognition) return;
-        
+
         try {
             this._recognition.abort();
         } catch (error) {
             // Ignore
         }
-        
+
+        this._sessionActive = false;
         this._isListening = false;
     }
 
     /**
-     * Check if currently listening
+     * Check if currently listening (recognition actually receiving audio)
      */
     isListening() {
         return this._isListening;
+    }
+
+    /**
+     * Check if a recognition session is active or coming up
+     * (start requested, `onend` not yet fired). Callers use this to avoid
+     * racing wake detection against an in-flight STT session.
+     */
+    hasActiveSession() {
+        return this._sessionActive || this._isListening;
     }
 }
 
