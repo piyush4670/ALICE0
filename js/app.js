@@ -9,11 +9,9 @@
  */
 import { CONFIG } from './config.js';
 import { state } from './state.js';
-import { VOICE_STATUS } from './voiceStatus.js';
 import { auth } from './auth.js';
 import { bootSequence } from './boot.js';
 import { hud } from './hud.js';
-import { audioManager } from './audio.js';
 import { conversation } from './conversation.js';
 import { settings } from './settings.js';
 import { proactive } from './proactive.js';
@@ -157,7 +155,7 @@ class ALICEApp {
         hud.init(this._screens.hud);
 
         state.logActivity('Welcome to ALICE', 'success');
-        state.notify('Systems online — how can I help?', 'success');
+        state.notify('Core systems ready — how can I help?', 'success');
 
         // Start proactive assistance (respects settings)
         proactive.start();
@@ -165,9 +163,9 @@ class ALICEApp {
         // Stage 1A: voice is NOT started here. No microphone permission
         // request happens automatically — the system boots to:
         //   ALICE — READY — Voice OFF
-        // The user explicitly enables voice with the Mic button.
-        state.setVoiceState('isMicrophoneAvailable', audioManager.isAvailable());
-        state.setVoiceStatus(VOICE_STATUS.OFF);
+        // The user explicitly enables voice with the Mic button. Only the
+        // ConversationManager transitions the voice lifecycle.
+        conversation.syncBootState();
     }
 
     // ==================================================================
@@ -201,6 +199,10 @@ class ALICEApp {
      *   Mic → permission request → granted → Voice READY
      * On denial the system reports "Voice unavailable" and text
      * interaction keeps working normally.
+     *
+     * The App only REQUESTS the action — the ConversationManager owns
+     * every voice lifecycle transition (Stage 1A authority). The App reads
+     * the outcome and surfaces user-facing feedback.
      */
     async _enableVoice() {
         if (this._voiceEnableInFlight) return;
@@ -208,26 +210,15 @@ class ALICEApp {
 
         this._voiceEnableInFlight = true;
         try {
-            state.setVoiceState('isMicrophoneAvailable', audioManager.isAvailable());
+            const result = await conversation.enableVoice();
 
-            const hasPermission = await audioManager.requestPermission();
-            state.setVoiceState('isMicrophonePermission', hasPermission);
-
-            if (!hasPermission) {
-                state.setVoiceStatus(VOICE_STATUS.ERROR, 'Voice unavailable — microphone access denied');
-                state.logActivity('Microphone access denied — voice disabled; text input still works', 'warning');
+            if (result.started) {
+                state.logActivity('Voice system ready — say "Hey Alice" or press Wake', 'success');
+            } else if (!result.permission) {
                 state.notify('Voice unavailable — microphone access denied. Text commands still work.', 'warning');
-                return;
             }
-
-            const started = await conversation.start();
-            if (!started) {
-                state.setVoiceStatus(VOICE_STATUS.ERROR, 'Voice unavailable');
-                state.logActivity('Voice system could not start (missing browser support?)', 'warning');
-                return;
-            }
-
-            state.logActivity('Voice system ready — say "Hey Alice" or press Wake', 'success');
+            // result.aborted (stopped mid-permission): ConversationManager
+            // already reconciled the lifecycle; no UI action needed.
         } finally {
             this._voiceEnableInFlight = false;
         }

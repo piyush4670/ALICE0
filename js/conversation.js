@@ -268,6 +268,59 @@ class ConversationManager {
     // ==================================================================
 
     /**
+     * User-facing entry point for enabling voice (Mic button). The
+     * ConversationManager owns EVERY lifecycle transition here:
+     * permission → start → READY, or ERROR when unavailable. App/UI code
+     * only requests this action and renders the resulting state.
+     * Returns { started, permission, aborted? }.
+     */
+    async enableVoice() {
+        state.setVoiceState('isMicrophoneAvailable', audioManager.isAvailable());
+
+        if (this._isActive) {
+            return { started: true, permission: true };
+        }
+
+        const token = this._generation;
+        const hasPermission = await audioManager.requestPermission();
+        state.setVoiceState('isMicrophonePermission', hasPermission);
+
+        if (!hasPermission) {
+            this._setStatus(VOICE_STATUS.ERROR, 'Voice unavailable — microphone access denied');
+            state.logActivity('Microphone access denied — voice disabled; text input still works', 'warning');
+            return { started: false, permission: false };
+        }
+
+        // Stop/disable happened while the permission prompt was open —
+        // never resurrect voice from a stale enable flow (Stage 1A).
+        if (token !== this._generation) {
+            state.logActivity('Voice enable aborted — stopped during permission request', 'info');
+            return { started: false, permission: true, aborted: true };
+        }
+
+        const started = await this.start();
+        if (!started) {
+            this._setStatus(VOICE_STATUS.ERROR, 'Voice unavailable');
+            state.logActivity('Voice system could not start (missing browser support?)', 'warning');
+            return { started: false, permission: true };
+        }
+
+        return { started: true, permission: true };
+    }
+
+    /**
+     * Called when the HUD opens after boot: voice is OFF until the user
+     * explicitly enables the microphone. Only the ConversationManager
+     * transitions the lifecycle (Stage 1A authority).
+     */
+    syncBootState() {
+        state.setVoiceState('isMicrophoneAvailable', audioManager.isAvailable());
+        if (!this._isActive) {
+            this._setStatus(VOICE_STATUS.OFF);
+        }
+    }
+
+    /**
      * Start the conversation system (user explicitly enabled voice).
      */
     async start() {
