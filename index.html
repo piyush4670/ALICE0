@@ -4,13 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="ALICE - Advanced Intelligence & Learning Interactive Companion Engine">
-    <meta name="theme-color" content="#0a0a0f">
-    <title>ALICE - AI Command Interface</title>
+    <meta name="theme-color" content="#0b0e17">
+    <title>ALICE — Personal Assistant</title>
     
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700&family=Rajdhani:wght@300;400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
     
     <!-- Styles -->
     <link rel="stylesheet" href="css/styles.css">
@@ -19,28 +19,27 @@
     <!-- ========================================
          AUTHENTICATION SCREEN
          ======================================== -->
-    <div id="auth-screen" class="screen active">
+    <div id="auth-screen" class="screen active" role="main">
         <div class="auth-container">
-            <div class="auth-logo">
-                <div class="auth-logo-icon"></div>
-                <h1 class="auth-title">ALICE</h1>
-                <p class="auth-subtitle">Advanced Intelligence System</p>
+            <div class="auth-orb-wrap" aria-hidden="true">
+                <div class="auth-orb"></div>
             </div>
+            <h1 class="auth-title">ALICE</h1>
+            <p class="auth-subtitle">Advanced Intelligence System</p>
             
-            <form class="auth-form" id="auth-form">
-                <div class="auth-input-wrapper">
-                    <input 
-                        type="password" 
-                        class="auth-input" 
-                        id="pin-input"
-                        maxlength="8"
-                        placeholder="• • • •"
-                        autocomplete="off"
-                        inputmode="numeric"
-                        pattern="[0-9]*"
-                        aria-label="Enter PIN"
-                    >
-                </div>
+            <form class="auth-form" id="auth-form" novalidate>
+                <label for="pin-input" class="visually-hidden">Enter PIN</label>
+                <input 
+                    type="password" 
+                    class="auth-input" 
+                    id="pin-input"
+                    maxlength="8"
+                    placeholder="Enter PIN"
+                    autocomplete="off"
+                    inputmode="numeric"
+                    pattern="[0-9]*"
+                    aria-label="Enter PIN"
+                >
                 
                 <div class="pin-dots" aria-hidden="true">
                     <span class="pin-dot"></span>
@@ -50,12 +49,7 @@
                 </div>
                 
                 <button type="submit" class="auth-button">
-                    <span>Access System</span>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
-                        <polyline points="10 17 15 12 10 7"/>
-                        <line x1="15" y1="12" x2="3" y2="12"/>
-                    </svg>
+                    <span>Unlock</span>
                 </button>
                 
                 <p class="auth-status" id="auth-status" aria-live="polite"></p>
@@ -66,21 +60,13 @@
     <!-- ========================================
          BOOT SCREEN
          ======================================== -->
-    <div id="boot-screen" class="screen">
+    <div id="boot-screen" class="screen" role="main">
         <div class="boot-container">
-            <div class="boot-header">
-                <h2 class="boot-title">ALICE INITIALIZATION</h2>
-                <p class="boot-subtitle">System Boot Sequence v0.5.0</p>
+            <div class="boot-orb-wrap" aria-hidden="true">
+                <div class="boot-orb"></div>
             </div>
-            
-            <div class="boot-progress">
-                <div class="boot-progress-fill"></div>
-            </div>
-            
-            <div class="boot-status">
-                <p class="boot-status-text">Preparing systems...</p>
-            </div>
-            
+            <h2 class="boot-title">ALICE</h2>
+            <p class="boot-status-text">Initializing...</p>
             <div class="boot-items">
                 <!-- Boot items rendered dynamically -->
             </div>
@@ -88,268 +74,157 @@
     </div>
 
     <!-- ========================================
-         HUD SCREEN
+         MAIN ASSISTANT SCREEN (HUD)
          ======================================== -->
-    <div id="hud-screen" class="screen">
+    <div id="hud-screen" class="screen" role="main">
+        
         <!-- Top Bar -->
-        <div class="hud-top-bar">
+        <header class="hud-top-bar">
             <div class="hud-logo">
-                <div class="hud-logo-icon"></div>
+                <div class="hud-logo-orb" aria-hidden="true"></div>
                 <span class="hud-logo-text">ALICE</span>
             </div>
             
-            <div class="hud-time-date">
-                <div class="hud-time time-display">00:00:00</div>
-                <div class="hud-date date-display">Loading...</div>
+            <div class="hud-top-right">
+                <span class="hud-time time-display">00:00</span>
+                <span class="hud-status-badge idle status-badge" aria-live="polite">Ready</span>
             </div>
-            
-            <div class="hud-status-badge idle status-badge">
-                <span class="status-text">Ready</span>
-            </div>
-        </div>
+        </header>
         
-        <!-- Main HUD -->
-        <div class="hud-main">
-            <!-- Left Panel - System Status -->
-            <div class="hud-left-panel">
-                <div class="hud-panel">
-                    <div class="hud-panel-header">
-                        <span class="hud-panel-icon">◆</span>
-                        <span class="hud-panel-title">System Status</span>
-                    </div>
-                    
-                    <div class="metric-item metric-cpu">
-                        <div class="metric-header">
-                            <span class="metric-label">CPU</span>
-                            <span class="metric-value">0%</span>
-                        </div>
-                        <div class="metric-bar-container">
-                            <div class="metric-bar"></div>
-                        </div>
-                    </div>
-                    
-                    <div class="metric-item metric-memory">
-                        <div class="metric-header">
-                            <span class="metric-label">Memory</span>
-                            <span class="metric-value">0%</span>
-                        </div>
-                        <div class="metric-bar-container">
-                            <div class="metric-bar"></div>
-                        </div>
-                    </div>
-                    
-                    <div class="metric-item metric-network">
-                        <div class="metric-header">
-                            <span class="metric-label">Network</span>
-                            <span class="metric-value">0%</span>
-                        </div>
-                        <div class="metric-bar-container">
-                            <div class="metric-bar"></div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Skill Status Panel -->
-                <div class="hud-panel">
-                    <div class="hud-panel-header">
-                        <span class="hud-panel-icon">◈</span>
-                        <span class="hud-panel-title">Active Skill</span>
-                    </div>
-                    
-                    <div class="skill-status">
-                        <span class="skill-icon">◆</span>
-                        <span class="skill-name">Ready</span>
-                        <div class="skill-progress-bar">
-                            <div class="skill-progress"></div>
-                        </div>
-                    </div>
-                    
-                    <div class="skills-list">
-                        <div class="skill-item" title="Calculator">
-                            <span class="skill-badge">∑</span>
-                        </div>
-                        <div class="skill-item" title="Web Search">
-                            <span class="skill-badge">🔍</span>
-                        </div>
-                        <div class="skill-item" title="Notes">
-                            <span class="skill-badge">📝</span>
-                        </div>
-                        <div class="skill-item" title="Reminders">
-                            <span class="skill-badge">⏰</span>
-                        </div>
-                        <div class="skill-item" title="Memory">
-                            <span class="skill-badge">🧠</span>
-                        </div>
-                        <div class="skill-item" title="Vision">
-                            <span class="skill-badge">👁</span>
-                        </div>
-                        <div class="skill-item" title="Browser">
-                            <span class="skill-badge">🌐</span>
-                        </div>
-                        <div class="skill-item" title="Developer Mode">
-                            <span class="skill-badge">⌨</span>
-                        </div>
-                        <div class="skill-item" title="IoT Devices">
-                            <span class="skill-badge">💡</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- Voice Controls Panel -->
-                <div class="hud-panel">
-                    <div class="hud-panel-header">
-                        <span class="hud-panel-icon">◇</span>
-                        <span class="hud-panel-title">Voice Controls</span>
-                    </div>
-                    
-                    <!-- Voice Status Indicator (renders voice.status from state) -->
-                    <div class="voice-status inactive">
-                        <span class="mic-icon">🎤</span>
-                        <span class="voice-status-text">Voice OFF</span>
-                    </div>
-
-                    <!-- Voice Control Buttons -->
-                    <div class="voice-controls">
-                        <button class="voice-btn primary" id="voice-wake-btn" type="button" title="Wake ALICE (manual activation)">
-                            <span class="voice-btn-icon">👋</span>
-                            <span class="voice-btn-label">Wake</span>
-                        </button>
-                        <button class="voice-btn" id="voice-stop-btn" type="button" title="Stop all voice activity (listening, speaking, wake)">
-                            <span class="voice-btn-icon">⏹</span>
-                            <span class="voice-btn-label">Stop</span>
-                        </button>
-                        <button class="voice-btn" id="mic-toggle" type="button" title="Enable / disable voice (requests microphone permission)">
-                            <span class="voice-btn-icon">🎙</span>
-                            <span class="voice-btn-label">Mic</span>
-                        </button>
-                    </div>
-                </div>
-                
-                <div class="hud-panel">
-                    <div class="hud-panel-header">
-                        <span class="hud-panel-icon">◈</span>
-                        <span class="hud-panel-title">Quick Actions</span>
-                    </div>
-                    
-                    <div class="quick-actions">
-                        <button class="quick-action" type="button" data-action="help">Help</button>
-                        <button class="quick-action" type="button" data-action="settings">Settings</button>
-                        <button class="quick-action" type="button" data-action="skills">Skills</button>
-                        <button class="quick-action" type="button" data-action="memory">Memory</button>
-                    </div>
-                </div>
-            </div>
+        <!-- Main Content Area -->
+        <main class="hud-main">
             
-            <!-- Center Panel - ALICE Core -->
-            <div class="hud-center-panel">
+            <!-- ALICE Identity + State -->
+            <section class="alice-identity" aria-label="ALICE status">
                 <div class="alice-orb-container">
-                    <div class="alice-orb idle">
+                    <div class="alice-orb idle" aria-hidden="true">
                         <div class="orb-ring"></div>
-                        <div class="orb-ring"></div>
-                        <div class="orb-ring"></div>
-                        <div class="orb-particles"></div>
+                        <div class="orb-ring orb-ring-outer"></div>
                         <div class="orb-core"></div>
-                        <div class="orb-core-glow"></div>
                     </div>
                 </div>
-                
-                <!-- Transcript Display -->
-                <div class="transcript-display"></div>
-                <div class="response-display"></div>
-                
-                <div class="state-indicator idle">
-                    <div class="state-label">Current State</div>
-                    <div class="state-text">IDLE</div>
+                <div class="state-indicator idle" aria-live="polite">
+                    <span class="state-dot"></span>
+                    <span class="state-text">Ready</span>
                 </div>
-                
-                <div class="waveform-container">
-                    <canvas class="waveform-canvas"></canvas>
+                <div class="alice-prompt">
+                    <span class="alice-prompt-text">What can I do for you?</span>
                 </div>
+            </section>
 
-                <!-- Text Command Input (Part 4) -->
-                <form class="command-input-form" id="command-form">
-                    <input
-                        type="text"
-                        class="command-input"
-                        id="command-input"
-                        placeholder="Type a command… (e.g. research quantum computing, summarize it and create a document)"
-                        autocomplete="off"
-                        aria-label="Type a command"
-                    >
-                    <button type="submit" class="command-submit" aria-label="Send command">↵</button>
-                </form>
+            <!-- Waveform (truthful: only active when real audio) -->
+            <div class="waveform-container" aria-hidden="true">
+                <canvas class="waveform-canvas"></canvas>
             </div>
             
-            <!-- Right Panel - Task Dashboard + Activity Log -->
-            <div class="hud-right-panel">
-                <!-- Task Dashboard (Part 4) -->
-                <div class="hud-panel" id="task-panel">
-                    <div class="hud-panel-header">
-                        <span class="hud-panel-icon">▣</span>
-                        <span class="hud-panel-title">Task Dashboard</span>
+            <!-- Conversation Area -->
+            <section class="conversation-area" aria-label="Conversation" role="log" aria-live="polite">
+                <div class="conversation-scroll" id="conversation-scroll">
+                    <div class="conversation-empty">
+                        <span class="conversation-empty-text">Your conversation will appear here</span>
                     </div>
                 </div>
+            </section>
 
-                <div class="hud-panel">
-                    <div class="hud-panel-header">
-                        <span class="hud-panel-icon">◇</span>
-                        <span class="hud-panel-title">Activity Log</span>
-                    </div>
-                    
-                    <div class="activity-log-content">
-                        <!-- Activity items rendered dynamically -->
-                    </div>
+            <!-- Inline Task Progress (only visible when task active) -->
+            <section class="task-inline" id="task-inline" aria-label="Task progress" hidden>
+                <div class="task-inline-header">
+                    <span class="task-inline-goal" data-task="goal"></span>
+                    <span class="task-inline-status" data-task="status"></span>
                 </div>
-                
-                <div class="hud-panel">
-                    <div class="hud-panel-header">
-                        <span class="hud-panel-icon">◎</span>
-                        <span class="hud-panel-title">System Info</span>
-                    </div>
-                    
-                    <div style="font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim);">
-                        <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Version:</span> 0.5.0 EPSILON
-                        </div>
-                        <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Build:</span> 2026.08.30
-                        </div>
-                        <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Skills:</span> 
-                            <span style="color: var(--accent);">12 Active</span>
-                        </div>
-                        <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Agent:</span> 
-                            <span style="color: var(--accent);">Task Planner</span>
-                        </div>
-                        <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Vision:</span> 
-                            <span style="color: var(--accent);">Local Canvas</span>
-                        </div>
-                        <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">IoT:</span> 
-                            <span style="color: var(--accent);">Extensible</span>
-                        </div>
-                        <div style="margin-bottom: 8px;">
-                            <span style="color: var(--text-secondary);">Memory:</span> 
-                            <span style="color: var(--accent);">Enabled</span>
-                        </div>
-                        <div>
-                            <span style="color: var(--text-secondary);">Status:</span> 
-                            <span style="color: var(--accent);">Online</span>
-                        </div>
-                    </div>
+                <div class="task-inline-steps" data-task="steps"></div>
+                <div class="task-inline-progress-track">
+                    <div class="task-inline-progress-fill" data-task="progress-fill"></div>
                 </div>
+            </section>
+
+            <!-- Transcript Overlay (shows current speech input) -->
+            <div class="transcript-overlay" id="transcript-overlay" aria-live="polite">
+                <span class="transcript-text" id="transcript-text"></span>
             </div>
-        </div>
+
+        </main>
+        
+        <!-- Input Area (fixed at bottom) -->
+        <footer class="hud-footer">
+            <!-- Voice Controls -->
+            <div class="voice-bar" role="toolbar" aria-label="Voice controls">
+                <button class="voice-btn voice-btn-mic" id="mic-toggle" type="button" aria-label="Enable microphone">
+                    <svg class="voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                        <line x1="12" y1="19" x2="12" y2="23"/>
+                        <line x1="8" y1="23" x2="16" y2="23"/>
+                    </svg>
+                </button>
+                <button class="voice-btn voice-btn-stop" id="voice-stop-btn" type="button" aria-label="Stop all voice activity" title="Stop">
+                    <svg class="voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="6" y="6" width="12" height="12" rx="2"/>
+                    </svg>
+                </button>
+                <button class="voice-btn voice-btn-wake" id="voice-wake-btn" type="button" aria-label="Wake ALICE" title="Wake">
+                    <svg class="voice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Command Input -->
+            <form class="command-input-form" id="command-form">
+                <input
+                    type="text"
+                    class="command-input"
+                    id="command-input"
+                    placeholder="Type a command..."
+                    autocomplete="off"
+                    aria-label="Type a command"
+                >
+                <button type="submit" class="command-submit" aria-label="Send command">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"/>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                    </svg>
+                </button>
+            </form>
+            
+            <!-- Secondary Actions -->
+            <div class="hud-actions">
+                <button class="hud-action-btn" type="button" data-action="settings" aria-label="Settings" title="Settings">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                </button>
+                <button class="hud-action-btn" type="button" data-action="memory" aria-label="Memory" title="Memory">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/>
+                        <path d="M12 6v6l4 2"/>
+                    </svg>
+                </button>
+                <button class="hud-action-btn" type="button" data-action="help" aria-label="Help" title="Help">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                </button>
+            </div>
+        </footer>
     </div>
 
     <!-- ========================================
-         CONFIRMATION MODAL (Part 4)
+         CONFIRMATION MODAL
          ======================================== -->
     <div id="confirmation-modal" aria-hidden="true" role="dialog" aria-modal="true">
         <div class="confirmation-dialog">
-            <div class="confirmation-icon">⚠</div>
+            <div class="confirmation-icon-wrap" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                    <line x1="12" y1="9" x2="12" y2="13"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+            </div>
             <h3 class="confirmation-title" data-confirm-title>Confirmation required</h3>
             <p class="confirmation-message" data-confirm-message></p>
             <p class="confirmation-action" data-confirm-action></p>
@@ -361,48 +236,48 @@
                     <span>Cancel</span>
                 </button>
             </div>
-            <p class="confirmation-hint">You can also say "approve" or "cancel".</p>
+            <p class="confirmation-hint">You can also say "approve" or "cancel"</p>
         </div>
     </div>
 
     <!-- ========================================
-         NOTIFICATIONS (Part 5)
+         NOTIFICATION CENTER
          ======================================== -->
     <div id="notification-center" aria-live="polite"></div>
 
     <!-- ========================================
-         SETTINGS MODAL (Part 5)
+         SETTINGS MODAL
          ======================================== -->
     <div id="settings-modal" aria-hidden="true" role="dialog" aria-modal="true">
         <div class="alice-modal-dialog">
             <div class="alice-modal-header">
                 <h3 class="alice-modal-title">Settings</h3>
-                <button class="alice-modal-close" data-close="settings" aria-label="Close">×</button>
+                <button class="alice-modal-close" data-close="settings" aria-label="Close settings">&times;</button>
             </div>
             <div class="alice-modal-body" id="settings-body"><!-- rendered dynamically --></div>
         </div>
     </div>
 
     <!-- ========================================
-         MEMORY MANAGEMENT MODAL (Part 5)
+         MEMORY MANAGEMENT MODAL
          ======================================== -->
     <div id="memory-modal" aria-hidden="true" role="dialog" aria-modal="true">
         <div class="alice-modal-dialog">
             <div class="alice-modal-header">
-                <h3 class="alice-modal-title">Memory Management</h3>
-                <button class="alice-modal-close" data-close="memory" aria-label="Close">×</button>
+                <h3 class="alice-modal-title">Memory</h3>
+                <button class="alice-modal-close" data-close="memory" aria-label="Close memory">&times;</button>
             </div>
             <div class="alice-modal-body" id="memory-body"><!-- rendered dynamically --></div>
         </div>
     </div>
 
     <!-- ========================================
-         DEBUG PANEL
+         DEBUG PANEL (separated from main experience)
          ======================================== -->
-    <div id="debug-panel">
+    <div id="debug-panel" aria-hidden="true">
         <div class="debug-header">
-            <span class="debug-title">Debug Controls</span>
-            <button class="debug-close" aria-label="Close">&times;</button>
+            <span class="debug-title">Developer Tools</span>
+            <button class="debug-close" aria-label="Close debug panel">&times;</button>
         </div>
         
         <div class="debug-section">
@@ -425,9 +300,33 @@
         </div>
 
         <div class="debug-section">
-            <div class="debug-label">Agent Demos (Part 4)</div>
+            <div class="debug-label">Agent Demos</div>
             <button id="demo-research-btn" class="debug-btn" style="width: 100%; margin-bottom: 4px;">Demo: Research → Summarize → Document</button>
             <button id="demo-confirm-btn" class="debug-btn" style="width: 100%;">Demo: Delete Note (confirmation)</button>
+        </div>
+
+        <div class="debug-section">
+            <div class="debug-label">System Info</div>
+            <div class="debug-info" style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-dim); line-height: 1.6;">
+                <div>Version: <span class="debug-info-val">0.5.0 EPSILON</span></div>
+                <div>Build: <span class="debug-info-val">2026.08.30</span></div>
+                <div>Skills: <span class="debug-info-val" style="color: var(--accent);">12 Active</span></div>
+                <div>Agent: <span class="debug-info-val" style="color: var(--accent);">Task Planner</span></div>
+            </div>
+        </div>
+        
+        <div class="debug-section">
+            <div class="debug-label">Activity Log</div>
+            <div class="debug-activity-log" id="debug-activity-log" style="max-height:150px;overflow-y:auto;font-family:var(--font-mono);font-size:0.65rem;color:var(--text-dim);line-height:1.5;"></div>
+        </div>
+        
+        <div class="debug-section">
+            <div class="debug-label">System Metrics (Simulated)</div>
+            <div class="debug-metrics" style="font-family:var(--font-mono);font-size:0.65rem;">
+                <div class="debug-metric"><span>CPU</span><span class="debug-metric-val debug-cpu">0%</span></div>
+                <div class="debug-metric"><span>MEM</span><span class="debug-metric-val debug-mem">0%</span></div>
+                <div class="debug-metric"><span>NET</span><span class="debug-metric-val debug-net">0%</span></div>
+            </div>
         </div>
         
         <div class="debug-section">
@@ -435,7 +334,12 @@
         </div>
     </div>
     
-    <button id="debug-toggle" aria-label="Show debug panel">DBG</button>
+    <button id="debug-toggle" aria-label="Open developer tools" title="Developer Tools">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+            <polyline points="16 18 22 12 16 6"/>
+            <polyline points="8 6 2 12 8 18"/>
+        </svg>
+    </button>
 
     <!-- Scripts -->
     <script type="module" src="js/app.js"></script>
