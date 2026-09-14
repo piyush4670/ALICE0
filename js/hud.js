@@ -114,48 +114,32 @@ class ALICEHUD {
         const ctx = this._waveformCtx;
         const width = canvas.offsetWidth;
         const height = canvas.offsetHeight;
-        const aliceState = state.get('aliceState');
         
-        // Truthful waveform: only show meaningful activity when real audio exists
-        const isAudioActive = audioManager.isCapturing();
-        const isListening = aliceState === 'LISTENING';
-        const isSpeaking = aliceState === 'SPEAKING';
+        // Truthful waveform: ONLY show when real audio analyser data exists.
+        // If the audio manager is not actively capturing, there is no real
+        // audio to visualize — hide the waveform entirely rather than
+        // displaying synthetic/random data that could be mistaken for
+        // real microphone or speaker activity.
+        const isCapturing = audioManager.isCapturing();
         
-        // Show waveform only when there's real audio activity
-        const shouldShow = isListening || isSpeaking || 
-            (aliceState !== 'IDLE' && aliceState !== 'COMPLETING');
-        
-        container.classList.toggle('visible', shouldShow);
-        
-        if (!shouldShow) {
+        if (!isCapturing) {
+            container.classList.remove('visible');
             ctx.clearRect(0, 0, width, height);
+            // Reset data so stale bars don't appear if capture resumes
+            this._waveformData.fill(0);
             return;
         }
-
-        // Shift data
+        
+        container.classList.add('visible');
+        
+        // Read real audio level from the analyser (returns 0-1)
+        const audioLevel = audioManager.getAudioLevel();
+        
+        // Shift data left and append the real level
         for (let i = 0; i < this._waveformData.length - 1; i++) {
             this._waveformData[i] = this._waveformData[i + 1];
         }
-        
-        let newValue;
-        
-        if (isAudioActive && isListening) {
-            // Real audio data
-            const audioLevel = audioManager.getAudioLevel();
-            newValue = audioLevel * 2 + (Math.random() - 0.5) * 0.05;
-        } else if (isSpeaking) {
-            // Speaking animation (simulated but clearly state-driven)
-            newValue = (Math.random() * 0.4 + 0.1) * Math.sin(Date.now() / 200);
-        } else if (aliceState === 'PROCESSING' || aliceState === 'UNDERSTANDING') {
-            // Processing: subtle rhythmic pattern
-            newValue = Math.sin(Date.now() / 600) * 0.2 + (Math.random() - 0.5) * 0.05;
-        } else if (aliceState === 'EXECUTING') {
-            newValue = Math.sin(Date.now() / 400) * 0.3 + (Math.random() - 0.5) * 0.08;
-        } else {
-            newValue = 0;
-        }
-        
-        this._waveformData[this._waveformData.length - 1] = newValue;
+        this._waveformData[this._waveformData.length - 1] = audioLevel * 2;
 
         // Clear and draw
         ctx.clearRect(0, 0, width, height);
@@ -164,18 +148,11 @@ class ALICEHUD {
         const barWidth = width / barCount;
         const centerY = height / 2;
         
-        // Color based on state
-        const colors = {
-            LISTENING: CONFIG.visuals.primaryColor,
-            PROCESSING: CONFIG.visuals.warningColor,
-            UNDERSTANDING: CONFIG.visuals.warningColor,
-            SPEAKING: CONFIG.visuals.accentColor,
-            EXECUTING: CONFIG.visuals.primaryColor,
-            SELECTING_TOOL: CONFIG.visuals.primaryColor,
-            COMPLETING: CONFIG.visuals.accentColor
-        };
-        
-        const color = colors[aliceState] || CONFIG.visuals.primaryColor;
+        // Color reflects the current state (blue for listening, teal for speaking)
+        const aliceState = state.get('aliceState');
+        const color = (aliceState === 'SPEAKING')
+            ? CONFIG.visuals.accentColor
+            : CONFIG.visuals.primaryColor;
         ctx.fillStyle = color;
 
         for (let i = 0; i < barCount; i++) {
