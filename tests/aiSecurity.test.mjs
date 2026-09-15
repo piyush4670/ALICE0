@@ -28,6 +28,7 @@ globalThis.Blob = class { constructor() {} };
 globalThis.URL = { createObjectURL() { return 'blob:test'; }, revokeObjectURL() {} };
 
 const { aiBrain } = await import('../js/ai/aiBrain.js');
+const { MockAdapter } = await import('../js/ai/mockAdapter.js');
 const { planValidator } = await import('../js/ai/planValidator.js');
 const { agent } = await import('../js/agent.js');
 const { skillManager } = await import('../js/skillManager.js');
@@ -40,6 +41,11 @@ function check(name, cond) {
     else { fail++; console.log('  FAIL', name); }
 }
 
+// This suite drives the deterministic MockAdapter control surface (reset /
+// setCustomPlan), so it installs the mock adapter explicitly instead of
+// depending on CONFIG.ai.adapter — which is now 'http' (the HttpModelAdapter
+// is the production default; the mock remains available).
+aiBrain.setAdapter(new MockAdapter());
 const adapter = aiBrain.getAdapter();
 
 console.log('1) Model cannot bypass permissions');

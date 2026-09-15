@@ -146,7 +146,7 @@ export const CONFIG = {
     ai: {
         enabled: true,
         provider: 'mock',          // 'mock' | provider identifier (gateway-side concern)
-        adapter: 'mock',           // 'mock' | 'http' — 'mock' remains the default adapter
+        adapter: 'http',           // 'mock' | 'http' — Phase 6.3.4: 'http' is the production default
         timeout: 5000,             // ms before timing out model generation
         maxOutputSize: 10000,      // maximum characters in model output
         maxSteps: 8,               // maximum planning steps allowed

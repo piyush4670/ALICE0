@@ -581,7 +581,13 @@ console.log('13) Credential leakage prevention');
     check('CONFIG contains no provider api keys', !/apiKey|GROQ_API_KEY|OPENAI_API_KEY/i.test(configSource));
     check('CONFIG.ai.gateway holds no secret values',
         CONFIG.ai.gateway.url === '' && CONFIG.ai.gateway.trustToken === '');
-    check('CONFIG.ai.adapter still defaults to mock', CONFIG.ai.adapter === 'mock');
+    check('CONFIG.ai.adapter selects the http adapter by default', CONFIG.ai.adapter === 'http');
+    // The default is a transport switch only: it must not smuggle any
+    // provider credential or provider endpoint into browser configuration.
+    check('http default ships no provider credentials in CONFIG',
+        !/api\.groq\.com|api\.openai\.com|openrouter\.ai|generativelanguage/i.test(configSource));
+    check('http default ships no provider hostnames in CONFIG',
+        CONFIG.ai.gateway.allowedHosts.every(h => h === '127.0.0.1' || h === 'localhost' || h === '::1'));
 }
 
 // ==================================================================
@@ -721,11 +727,17 @@ console.log('16) MockAdapter still works');
     const mockResult = await aiBrain.processRequest('research quantum computing, summarize the important information and create a document');
     check('AIBrain still plans with MockAdapter', mockResult.success === true && mockResult.isMultiStep === true);
 
-    // A fresh AIBrain defaults to the mock adapter (http is not the default)
+    // Phase 6.3.4: a fresh AIBrain now defaults to the HTTP adapter, while
+    // MockAdapter stays reachable through the registry (checked above).
     const { AIBrain } = await import('../js/ai/aiBrain.js');
     const freshBrain = new AIBrain();
-    check('fresh AIBrain defaults to the mock adapter', freshBrain.getAdapterName() === 'MockAdapter');
-    check('default remains offline-safe', CONFIG.ai.adapter === 'mock');
+    check('fresh AIBrain defaults to the HttpModelAdapter', freshBrain.getAdapterName() === 'HttpModelAdapter');
+    check('default adapter is the configured http adapter', CONFIG.ai.adapter === 'http');
+    const defaultGatewayUrl = freshBrain.getAdapter().getGatewayUrl();
+    check('default adapter contacts only the local gateway (same-origin path or loopback URL)',
+        defaultGatewayUrl === '/api/ai/generate' ||
+        /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/.test(defaultGatewayUrl));
+    check('offline-safe behaviour is preserved by the deterministic fallback', CONFIG.ai.fallbackEnabled === true);
 }
 
 // ==================================================================

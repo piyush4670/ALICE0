@@ -27,6 +27,11 @@ function check(name, cond) {
     else { fail++; console.log('  FAIL', name); }
 }
 
+// This suite drives the deterministic MockAdapter control surface
+// (reset / setFailure / setHang / setMalformedOutput), so it installs the
+// mock adapter explicitly instead of depending on CONFIG.ai.adapter —
+// which is now 'http' (the HttpModelAdapter is the production default).
+aiBrain.setAdapter(new MockAdapter());
 const adapter = aiBrain.getAdapter();
 
 console.log('1) AI Brain accepts request & returns structured plan');
