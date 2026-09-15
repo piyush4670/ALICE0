@@ -94,8 +94,8 @@ ALICE0/
 │   ├── ai/                 # AI Brain layer (Phase 6.2/6.3)
 │   │   ├── aiBrain.js      # Model-agnostic AI Brain + adapter registry
 │   │   ├── modelAdapter.js # Adapter abstraction + AI error hierarchy
-│   │   ├── mockAdapter.js  # Deterministic offline adapter (default)
-│   │   ├── httpModelAdapter.js # Gateway-only HTTP adapter (Phase 6.3.2)
+│   │   ├── mockAdapter.js  # Deterministic offline adapter (tests / offline)
+│   │   ├── httpModelAdapter.js # Gateway-only HTTP adapter — default since 6.3.4
 │   │   ├── planValidator.js# Pre-execution plan validation
 │   │   ├── planSchema.js   # Plan schema + injection scanning
 │   │   ├── contextBuilder.js # Bounded context assembly
@@ -143,7 +143,12 @@ ALICE0/
 
 The **browser app** is fully client-side and requires **no environment
 variables** and **no API keys** to run. All client configuration lives in
-`js/config.js` (`CONFIG`) and is frozen at runtime:
+`js/config.js` (`CONFIG`) and is frozen at runtime. Since Phase 6.3.4 the AI
+Brain uses the **HTTP adapter** (`CONFIG.ai.adapter = 'http'`), which speaks
+only to the local gateway; when no gateway is reachable the existing
+deterministic planner fallback answers, so the app still runs with zero
+configuration. `MockAdapter` stays available (`CONFIG.ai.adapter = 'mock'`)
+for tests and offline use:
 
 | Setting | Where | Purpose |
 |---------|-------|---------|
@@ -159,12 +164,14 @@ Runtime user settings (proactive level, feature toggles, per-skill enable/disabl
 are persisted in `localStorage` under `alice_settings`; memory/notes/reminders
 under `alice_memory`.
 
-### Optional: local AI gateway (Phase 6.3.1 → 6.3.3)
+### Local AI gateway (Phase 6.3.1 → 6.3.4)
 
-The default AI provider is a deterministic **mock**, so nothing above is
-required. To connect a **real** provider, start `server/gateway.js` and
-configure it with **server-side** environment variables. The browser never
-receives a key, a provider URL, or an `Authorization` header.
+`server/gateway.js` is the **credential boundary**: it is the only component
+that ever sees a provider key. The gateway's own default provider is a
+deterministic **mock**, so nothing below is required to start it. To connect a
+**real** provider, start `server/gateway.js` and configure it with
+**server-side** environment variables. The browser never receives a key, a
+provider URL, or an `Authorization` header.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
@@ -177,12 +184,23 @@ receives a key, a provider URL, or an `Authorization` header.
 | `LOCAL_TRUST_TOKEN` | *none* | Optional local trust token |
 
 ```bash
-# Offline mock (default) — zero credentials, zero network
+# Offline mock provider (gateway default) — zero credentials, zero network
 node server/gateway.js
 
 # Real provider, model pinned server-side
 AI_PROVIDER=groq GROQ_API_KEY=... AI_MODEL=llama-3.3-70b-versatile node server/gateway.js
+
+# The browser then points at that gateway (alongside `python -m http.server 8080`):
+#   window.ALICE_GATEWAY_URL = 'http://127.0.0.1:3001'            or
+#   <meta name="alice-gateway-url" content="http://127.0.0.1:3001">
 ```
+
+`CONFIG.ai.gateway.url` is intentionally empty, so the client posts to the
+same-origin path `/api/ai/generate`. A page served from another origin must
+inject the gateway URL as above — it is a **deployment** value resolved at
+runtime and is never hard-coded into `js/config.js`; only loopback hosts are
+accepted. Without a reachable gateway the AI Brain fails fast and the
+deterministic planner answers, so the UI never depends on the network.
 
 Full details — provider allowlist, model-selection policy, response
 normalization, error categories and the security model — are in
@@ -264,7 +282,7 @@ python -m http.server 8080
 node tests/agent.test.mjs   # planner, agent loop, failure recovery, permissions (32 checks)
 node tests/part5.test.mjs   # Part 5: plugins, memory, settings, IoT, dev, security (34 checks)
 node tests/gateway.test.mjs # Phase 6.3.1 secure local AI gateway (44 checks)
-node tests/httpModelAdapter.test.mjs # Phase 6.3.2 HTTP model adapter (140 checks)
+node tests/httpModelAdapter.test.mjs # Phase 6.3.2/6.3.4 HTTP model adapter + default wiring (144 checks)
 node tests/realProvider.test.mjs     # Phase 6.3.3 real provider connection (201 checks)
 node tests/voiceLifecycle.test.mjs   # Stage 1A voice lifecycle / Stop / races / capture-race / boot / settings (115 checks)
 node tests/load.test.mjs    # verifies all 43 modules import without errors

@@ -47,6 +47,7 @@ globalThis.fetch = async (url) => {
 
 const { conversation } = await import('../js/conversation.js');
 const { aiBrain } = await import('../js/ai/aiBrain.js');
+const { MockAdapter } = await import('../js/ai/mockAdapter.js');
 const { state } = await import('../js/state.js');
 
 let pass = 0, fail = 0;
@@ -55,6 +56,11 @@ function check(name, cond) {
     else { fail++; console.log('  FAIL', name); }
 }
 
+// This suite drives the deterministic MockAdapter control surface (reset /
+// setFailure / setCustomPlan), so it installs the mock adapter explicitly
+// instead of depending on CONFIG.ai.adapter — which is now 'http' (the
+// HttpModelAdapter is the production default; the mock remains available).
+aiBrain.setAdapter(new MockAdapter());
 const adapter = aiBrain.getAdapter();
 
 console.log('1) AI Failure → Deterministic Planner Fallback');
