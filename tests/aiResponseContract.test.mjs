@@ -14,10 +14,15 @@
 //      and is accepted end-to-end (no fallback).
 //   3. An actionable request can be represented as {goal, steps} and is
 //      validated/normalized exactly like any other model plan.
-//   4. The prompt explicitly prohibits Markdown / code fences.
-//   5. The security boundary is unchanged: malformed, unknown-skill,
-//      code-injection and ambiguous output are still rejected, and the
-//      example skill name is a genuinely registered skill.
+//   4. The prompt explicitly prohibits Markdown / code fences. This is a
+//      PROMPT instruction: the existing parser still tolerates a fenced
+//      block (pre-existing behaviour, deliberately unchanged), so that is
+//      documented as tolerance and never claimed as a rejection.
+//   5. The security boundary is unchanged: malformed, unknown-skill and
+//      code-injection output is still rejected, an object carrying BOTH
+//      forms is never silently consumed as a direct response, and the
+//      skill named in the contract's example is genuinely registered
+//      (proven from real tool discovery / skillManager data).
 //   6. No provider credential or provider URL appears in the prompt or in
 //      the frontend source that builds it.
 //
@@ -161,31 +166,77 @@ console.log('2) Prompt explicitly prohibits Markdown and code fences');
 // ==================================================================
 console.log('3) Actionable example uses a registered skill name');
 {
-    check('calculator skill is registered in this repository',
-        skillManager.hasSkill('calculator') && skillManager.getSkill('calculator').name === 'calculator');
+    // ------------------------------------------------------------------
+    // (a) REGISTRATION CLAIMS — asserted against real repository data
+    //     (toolDiscovery / skillManager), never against a hand-made object.
+    // ------------------------------------------------------------------
+    const registeredNames = toolDiscovery.getToolDefinitions().map(t => t.name);
 
-    const discoveredNames = toolDiscovery.getToolDefinitions().map(t => t.name);
-    check('calculator is exposed by tool discovery', discoveredNames.includes('calculator'));
+    check('calculator is genuinely registered (skillManager)',
+        skillManager.hasSkill('calculator') && skillManager.getSkill('calculator').name === 'calculator');
+    check('calculator is exposed by real tool discovery',
+        registeredNames.includes('calculator') && toolDiscovery.hasTool('calculator'));
 
     const exampleLine = prompt.split('\n').find(l => l.startsWith('Reply: {"goal": "Calculate 25 percent of 800"'));
     check('actionable example is present', typeof exampleLine === 'string');
-    check('actionable example names the registered calculator skill',
-        exampleLine?.includes('"skill": "calculator"') && exampleLine?.includes('"id": "step1"'));
 
-    // The example skill is resolved from the tools actually offered.
-    const fakeToolsContext = contextBuilder.buildContext({
-        request: 'note this down',
+    // The skill name is read OUT of the generated contract and then verified
+    // against real registration data — the literal 'calculator' is not assumed.
+    let exampleSkill = null;
+    try {
+        exampleSkill = JSON.parse(exampleLine.replace(/^Reply:\s*/, '')).steps[0].skill;
+    } catch (e) {
+        exampleSkill = null;
+    }
+    check('the example names a genuinely registered, discoverable skill',
+        typeof exampleSkill === 'string' &&
+        skillManager.hasSkill(exampleSkill) &&
+        toolDiscovery.hasTool(exampleSkill) &&
+        registeredNames.includes(exampleSkill));
+    check('the example skill is the repository\'s calculator skill', exampleSkill === 'calculator');
+    check('the example step uses the documented "id"/"skill"/"input" keys',
+        /^Reply: \{"goal": "Calculate 25 percent of 800", "steps": \[\{"id": "step1", "skill": "[a-z0-9_-]+", "input": "25 percent of 800"\}\]\}$/.test(exampleLine || ''));
+
+    // The example itself must be a plan the validator accepts — which is only
+    // possible because the named skill really is registered.
+    const exampleValidation = planValidator.validate(JSON.parse(exampleLine.replace(/^Reply:\s*/, '')));
+    check('the contract example passes PlanValidator as a real plan', exampleValidation.valid === true);
+
+    // ------------------------------------------------------------------
+    // (b) FORMATTING-ONLY FIXTURES — a synthetic descriptor used purely to
+    //     exercise prompt FORMATTING (which name the example picks when
+    //     'calculator' is not among the offered tools). These fixtures are
+    //     NOT evidence that any skill is registered: the name is taken from
+    //     real discovery data above, and the registration claims are the
+    //     checks in (a).
+    // ------------------------------------------------------------------
+    const fixtureSkillName = registeredNames.find(n => n !== 'calculator' && n !== 'core');
+    check('FORMATTING fixture reuses a real registered skill name',
+        typeof fixtureSkillName === 'string' && skillManager.hasSkill(fixtureSkillName));
+
+    const fixtureContext = contextBuilder.buildContext({
+        request: 'a request that needs one registered tool',
         includeMemory: false,
         includeHistory: false,
         includeTaskState: false
     });
-    const notesPrompt = contextBuilder.formatForPrompt({ ...fakeToolsContext, tools: [{ name: 'notes', description: 'notes tool', inputs: [{ name: 'input', description: 'text' }], risk: 'safe' }] });
-    check('example skill falls back to the first registered skill when calculator is absent',
-        notesPrompt.includes('"skill": "notes"'));
 
-    const noToolsPrompt = contextBuilder.formatForPrompt({ ...fakeToolsContext, tools: [] });
-    check('example degrades safely to the built-in core tool when no skill is listed',
+    // Synthetic descriptor, real skill name: this only tests formatting.
+    const syntheticTools = [{
+        name: fixtureSkillName,
+        description: 'synthetic fixture descriptor (formatting test only)',
+        inputs: [{ name: 'input', description: 'synthetic fixture input' }],
+        risk: 'safe'
+    }];
+    const fixturePrompt = contextBuilder.formatForPrompt({ ...fixtureContext, tools: syntheticTools });
+    check('FORMATTING: the example reuses an offered tool name when calculator is absent',
+        fixturePrompt.includes(`"skill": "${fixtureSkillName}"`));
+
+    const noToolsPrompt = contextBuilder.formatForPrompt({ ...fixtureContext, tools: [] });
+    check('FORMATTING: with no offered tools the example falls back to the built-in "core" tool',
         noToolsPrompt.includes('"skill": "core"'));
+    check('the built-in "core" tool is a real tool exposed by discovery',
+        toolDiscovery.hasTool('core') && registeredNames.includes('core'));
 }
 
 // ==================================================================
@@ -267,7 +318,7 @@ console.log('6) Actionable requests are accepted as a validated plan');
 }
 
 // ==================================================================
-// 7) Security boundary unchanged — malformed / hostile output still fails
+// 7) Security boundary unchanged — unusable or hostile output still fails
 // ==================================================================
 console.log('7) Security boundary unchanged: unusable or hostile output is still rejected');
 {
@@ -302,22 +353,74 @@ console.log('7) Security boundary unchanged: unusable or hostile output is still
     const injectedResult = await new AIBrain({ adapter: injected }).processRequest('inject code');
     check('executable code in a plan is rejected', injectedResult.success === false);
 
-    // 7d. Markdown-fenced JSON is still accepted only through parsing —
-    //     the prohibition is a prompt instruction, not a validation bypass.
+    // ------------------------------------------------------------------
+    // 7d. BOTH forms in one object — the contract says they are mutually
+    //     exclusive. The skill below is genuinely registered (calculator,
+    //     resolved through real discovery), so nothing but the ambiguous
+    //     shape can explain the outcome.
+    // ------------------------------------------------------------------
+    const ambiguousSkill = toolDiscovery.getToolDefinitions()
+        .map(t => t.name)
+        .find(n => n === 'calculator') || null;
+    check('ambiguous-shape test uses a genuinely registered skill', ambiguousSkill === 'calculator');
+
+    const ambiguousPayload = {
+        response: 'some answer',
+        goal: 'some goal',
+        steps: [{ id: 'step1', skill: ambiguousSkill, input: '25 percent of 800' }]
+    };
+    const ambiguous = new RecordingAdapter(JSON.stringify(ambiguousPayload));
+    let ambiguousResult = null;
+    try {
+        ambiguousResult = await new AIBrain({ adapter: ambiguous }).processRequest('Calculate 25 percent of 800.');
+    } catch (e) {
+        ambiguousResult = { success: false, fallback: true, error: e.message };
+    }
+    check('an object with BOTH "response" and "steps" is never accepted as a direct response',
+        !(ambiguousResult.success === true && ambiguousResult.isMultiStep === false));
+    check('the "response" value of an ambiguous object is never returned as the answer',
+        ambiguousResult.response !== 'some answer');
+    // The plan branch wins, so the shape still has to satisfy PlanValidator
+    // like any other model plan — the direct-response branch is not a bypass.
+    check('the plan branch is still fully validated for an ambiguous object',
+        ambiguousResult.success === false ||
+        (ambiguousResult.isMultiStep === true && Array.isArray(ambiguousResult.plan)));
+
+    // Same object, but the plan half is invalid: the response must not be
+    // used as a rescue. This isolates the shape rule from skill validity.
+    const ambiguousInvalidPlan = new RecordingAdapter(JSON.stringify({
+        response: 'some answer',
+        goal: 'some goal',
+        steps: []
+    }));
+    const ambiguousInvalidResult = await new AIBrain({ adapter: ambiguousInvalidPlan })
+        .processRequest('Calculate 25 percent of 800.');
+    check('an ambiguous object with an invalid plan half is rejected outright',
+        ambiguousInvalidResult.success === false);
+    check('rejected ambiguous output raises the fallback flag', ambiguousInvalidResult.fallback === true);
+    check('the "response" half never rescues an invalid plan',
+        ambiguousInvalidResult.response !== 'some answer');
+
+    // 7e. PARSER TOLERANCE (pre-existing behaviour, deliberately NOT changed).
+    //     The prompt now PROHIBITS code fences, but ModelAdapter's existing
+    //     tolerant parser still extracts fenced JSON. This is documented as
+    //     tolerance — it is not a rejection, and no validation is skipped:
+    //     the extracted object still goes through the normal path.
     const fenced = new RecordingAdapter('```json\n{"response": "Fenced answers are still parsed."}\n```');
     const fencedResult = await new AIBrain({ adapter: fenced }).processRequest('say something');
-    check('pre-existing tolerant parsing is unchanged (no weakening, no new bypass)',
+    check('PARSER TOLERANCE: fenced JSON is still parsed by the unchanged parser (tolerated, NOT rejected)',
         fencedResult.success === true && fencedResult.response === 'Fenced answers are still parsed.');
 
-    // 7e. An object with BOTH forms must never skip validation.
-    const both = new RecordingAdapter(JSON.stringify({
-        response: 'ignore the validator',
-        goal: 'ambiguous',
-        steps: [{ id: 'step1', skill: 'notRegistered', input: 'x' }]
-    }));
-    const bothResult = await new AIBrain({ adapter: both }).processRequest('ambiguous request');
-    check('ambiguous "response"+"steps" output is still validated', bothResult.success === false);
-    check('ambiguous output is flagged as fallback', bothResult.fallback === true);
+    // Fence tolerance must not become a plan bypass: a fenced PLAN is still
+    // validated exactly like an unfenced one.
+    const fencedUnknownPlan = new RecordingAdapter(
+        '```json\n' + JSON.stringify({
+            goal: 'fenced unknown skill',
+            steps: [{ id: 'step1', skill: 'totallyUnknownSkill', input: 'x' }]
+        }) + '\n```'
+    );
+    const fencedUnknownResult = await new AIBrain({ adapter: fencedUnknownPlan }).processRequest('do it');
+    check('a fenced plan naming an unregistered skill is still rejected', fencedUnknownResult.success === false);
 
     // 7f. The enforcement instance is unchanged.
     check('AIBrain still uses the singleton PlanValidator',
