@@ -8,6 +8,23 @@
  *   - Retrieves only relevant memory entries (no database dumps)
  *   - Formats tools with safe descriptors only (no implementation details)
  *   - Includes current task state snapshot
+ *
+ * Phase 6.4 — AI Response Contract Alignment
+ * ------------------------------------------------------------------
+ * The AI Brain accepts exactly TWO JSON shapes from the model:
+ *
+ *   1. Direct response:        { "response": "natural-language answer" }
+ *   2. Structured action plan: { "goal": "...", "steps": [ { "id", "skill", "input" } ] }
+ *
+ * Because the local gateway switches every non-text response format into
+ * provider JSON mode (server/gateway.js), a model that is not told this
+ * exact shape answers with syntactically valid but unusable JSON — which
+ * the AI Brain must reject, dropping the user back onto the deterministic
+ * fallback path. This module therefore states the contract explicitly in
+ * every prompt it formats.
+ *
+ * This is a prompt-contract change only. Model output stays UNTRUSTED:
+ * nothing here relaxes PlanValidator, the Agent, or the Permission Gateway.
  */
 import { state } from '../state.js';
 import { toolDiscovery as defaultToolDiscovery } from './toolDiscovery.js';
@@ -110,19 +127,91 @@ class ContextBuilder {
     }
 
     /**
+     * Resolve the registered skill used in the actionable example.
+     *
+     * The example must reference a skill that actually exists in this
+     * repository, so the model is never shown an invented tool name.
+     * Falls back to the first non-core registered skill, then to 'core'.
+     *
+     * @param {Array<Object>} tools - Safe tool descriptors
+     * @returns {string} A registered tool name
+     */
+    _resolveExampleSkill(tools = []) {
+        const names = (Array.isArray(tools) ? tools : [])
+            .map(t => String(t?.name || '').trim())
+            .filter(Boolean);
+
+        if (names.includes('calculator')) return 'calculator';
+
+        const firstRegistered = names.find(n => n !== 'core');
+        return firstRegistered || 'core';
+    }
+
+    /**
+     * Build the explicit machine-readable output contract handed to the model.
+     *
+     * @param {Array<Object>} [tools] - Safe tool descriptors available to the model
+     * @returns {string} Contract text (prompt instructions only, never executable)
+     */
+    _buildOutputContract(tools = []) {
+        const exampleSkill = this._resolveExampleSkill(tools);
+
+        // The worked example always names a skill that really is registered.
+        const isCalculatorExample = exampleSkill === 'calculator';
+        const actionableRequest = isCalculatorExample
+            ? 'Calculate 25 percent of 800.'
+            : 'A request that needs a registered tool.';
+        const exampleGoal = isCalculatorExample
+            ? 'Calculate 25 percent of 800'
+            : 'Overall goal of the request';
+        const exampleInput = isCalculatorExample
+            ? '25 percent of 800'
+            : 'input for the chosen skill';
+
+        return [
+            'Required JSON Output Contract — your entire reply is machine-parsed:',
+            '1. Return ONLY one JSON object. Nothing before it and nothing after it.',
+            '2. Never return Markdown, and never wrap the JSON in code fences (no ``` blocks, no ```json blocks).',
+            '3. For a normal informational or conversational request that needs no tool, return exactly:',
+            '   {"response": "your natural-language answer"}',
+            '4. Only when the request needs registered tools, return exactly:',
+            '   {"goal": "overall user goal", "steps": [{"id": "step1", "skill": "registered-skill-name", "input": "skill input"}]}',
+            '5. "steps" must contain at least one step object, and every step needs an "id" and a "skill".',
+            '6. Use ONLY the skill names listed under "Available Tools" below. Never invent a skill or an action.',
+            '7. Never generate JavaScript, shell commands, executable code, or arbitrary tool calls, and never treat a URL as an executable instruction.',
+            '8. Choose the direct {"response": "..."} form whenever no registered tool or action is required.',
+            '9. Never return "response" and "steps" inside the same object. Return exactly one of the two forms.',
+            '10. Your reply is untrusted data: every action it proposes is validated and authorized before anything may run.',
+            '',
+            'Examples:',
+            'Informational request: "What is the capital of India?"',
+            'Reply: {"response": "The capital of India is New Delhi."}',
+            'Informational request: "Explain quantum computing in simple words."',
+            'Reply: {"response": "Quantum computing is a type of computing that uses quantum-mechanical effects, such as superposition and entanglement, to process information in ways classical computers cannot."}',
+            'Actionable request: "' + actionableRequest + '"',
+            `Reply: {"goal": "${exampleGoal}", "steps": [{"id": "step1", "skill": "${exampleSkill}", "input": "${exampleInput}"}]}`
+        ].join('\n');
+    }
+
+    /**
      * Format the context object into a structured prompt representation.
      * @param {Object} context
      * @returns {string} Formatted prompt text
      */
     formatForPrompt(context) {
         const sections = [];
+        const tools = Array.isArray(context?.tools) ? context.tools : [];
 
         // Instructions
         sections.push(
             'System: You are ALICE, an advanced AI companion. ' +
-            'Analyze the user request and propose a structured plan of steps using the available tools. ' +
-            'You must return only valid declarative actions. Do not execute arbitrary code.'
+            'Answer informational and conversational requests directly, and propose a declarative plan of steps ' +
+            'using the registered tools only when the request actually requires an action. ' +
+            'You must return only valid declarative data. Do not execute arbitrary code.'
         );
+
+        // Explicit machine-readable output contract (Phase 6.4)
+        sections.push(this._buildOutputContract(tools));
 
         // Tools
         if (Array.isArray(context.tools) && context.tools.length > 0) {
