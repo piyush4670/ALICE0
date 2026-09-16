@@ -19,10 +19,17 @@
 //      block (pre-existing behaviour, deliberately unchanged), so that is
 //      documented as tolerance and never claimed as a rejection.
 //   5. The security boundary is unchanged: malformed, unknown-skill and
-//      code-injection output is still rejected, an object carrying BOTH
-//      forms is never silently consumed as a direct response, and the
-//      skill named in the contract's example is genuinely registered
-//      (proven from real tool discovery / skillManager data).
+//      code-injection output is still rejected, and the skill named in the
+//      contract's example is genuinely registered (proven from real tool
+//      discovery / skillManager data).
+//
+//      Regarding an object carrying BOTH forms, two claims are kept apart:
+//      the PROMPT forbids emitting both, while at RUNTIME AIBrain is not a
+//      structural exclusivity enforcer — it checks `steps` first, so such
+//      an object is handled as a plan whenever that plan passes
+//      PlanValidator. The extra `response` field is never used as the
+//      answer, and the ambiguous shape grants no bypass of
+//      PlanValidator / Agent / Permission Gateway.
 //   6. No provider credential or provider URL appears in the prompt or in
 //      the frontend source that builds it.
 //
@@ -67,6 +74,8 @@ const { toolDiscovery } = await import('../js/ai/toolDiscovery.js');
 const { skillManager } = await import('../js/skillManager.js');
 const { permissions } = await import('../js/permissions.js');
 const { agent } = await import('../js/agent.js');
+const { memory } = await import('../js/memory.js');
+const { integrations } = await import('../js/integrations.js');
 const { HttpModelAdapter } = await import('../js/ai/httpModelAdapter.js');
 const { createGatewayServer } = await import('../server/gateway.js');
 
@@ -354,15 +363,32 @@ console.log('7) Security boundary unchanged: unusable or hostile output is still
     check('executable code in a plan is rejected', injectedResult.success === false);
 
     // ------------------------------------------------------------------
-    // 7d. BOTH forms in one object — the contract says they are mutually
-    //     exclusive. The skill below is genuinely registered (calculator,
-    //     resolved through real discovery), so nothing but the ambiguous
-    //     shape can explain the outcome.
+    // 7d. BOTH forms in one object: PROMPT CONTRACT vs RUNTIME BEHAVIOUR.
+    //
+    //     These are two different claims and must not be conflated:
+    //
+    //     * PROMPT CONTRACT (asserted in section 1) — the prompt instructs
+    //       the model never to emit both forms.
+    //     * RUNTIME BEHAVIOUR — AIBrain is NOT a structural exclusivity
+    //       enforcer: generatePlan() checks `steps` first, so an object
+    //       that also carries a `response` field is handled as a plan
+    //       whenever that plan passes PlanValidator. The extra `response`
+    //       field is never used as the answer.
+    //
+    //     Enforcing exclusivity inside AIBrain would be a production
+    //     behaviour change and is explicitly out of scope here. What IS
+    //     tested is that the ambiguous shape grants no security bypass.
+    //     The skill below is genuinely registered (calculator, resolved
+    //     through real discovery), so no unrelated failure can explain
+    //     the outcome.
     // ------------------------------------------------------------------
+    check('PROMPT CONTRACT: the model is instructed never to emit both forms',
+        /Never return "response" and "steps"/i.test(prompt));
+
     const ambiguousSkill = toolDiscovery.getToolDefinitions()
         .map(t => t.name)
         .find(n => n === 'calculator') || null;
-    check('ambiguous-shape test uses a genuinely registered skill', ambiguousSkill === 'calculator');
+    check('ambiguous-shape tests use a genuinely registered skill', ambiguousSkill === 'calculator');
 
     const ambiguousPayload = {
         response: 'some answer',
@@ -376,18 +402,40 @@ console.log('7) Security boundary unchanged: unusable or hostile output is still
     } catch (e) {
         ambiguousResult = { success: false, fallback: true, error: e.message };
     }
-    check('an object with BOTH "response" and "steps" is never accepted as a direct response',
-        !(ambiguousResult.success === true && ambiguousResult.isMultiStep === false));
-    check('the "response" value of an ambiguous object is never returned as the answer',
-        ambiguousResult.response !== 'some answer');
-    // The plan branch wins, so the shape still has to satisfy PlanValidator
-    // like any other model plan — the direct-response branch is not a bypass.
-    check('the plan branch is still fully validated for an ambiguous object',
-        ambiguousResult.success === false ||
-        (ambiguousResult.isMultiStep === true && Array.isArray(ambiguousResult.plan)));
 
-    // Same object, but the plan half is invalid: the response must not be
-    // used as a rescue. This isolates the shape rule from skill validity.
+    // Documented current behaviour — NOT a mutual-exclusivity guarantee.
+    check('RUNTIME BEHAVIOUR: AIBrain does not reject a structurally valid plan merely for an extra "response" field',
+        ambiguousResult.success === true && ambiguousResult.isMultiStep === true);
+    check('the extra "response" field is never used as the answer',
+        ambiguousResult.response !== 'some answer' && ambiguousResult.response === undefined);
+    check('the ambiguous shape gets no validation shortcut: the plan half is normalized as usual',
+        ambiguousResult.plan?.[0]?.skill === ambiguousSkill &&
+        ambiguousResult.plan?.every(s => typeof s.skill === 'string') === true);
+
+    // ---- Security bypass attempts through the ambiguous shape ----------
+    // None of the following may be relaxed by the presence of an extra
+    // "response" field.
+
+    // (i) A plan half naming an unregistered skill is still rejected.
+    const ambiguousUnknown = new RecordingAdapter(JSON.stringify({
+        response: 'some answer',
+        goal: 'some goal',
+        steps: [{ id: 'step1', skill: 'totallyUnknownSkill', input: 'x' }]
+    }));
+    const ambiguousUnknownResult = await new AIBrain({ adapter: ambiguousUnknown }).processRequest('do it');
+    check('ambiguous + unregistered skill is rejected by PlanValidator', ambiguousUnknownResult.success === false);
+    check('ambiguous + unregistered skill is flagged as fallback', ambiguousUnknownResult.fallback === true);
+
+    // (ii) Executable code in the plan half is still rejected.
+    const ambiguousInjected = new RecordingAdapter(JSON.stringify({
+        response: 'some answer',
+        goal: 'some goal',
+        steps: [{ id: 'step1', skill: 'notes', input: 'eval("window.localStorage.clear()")' }]
+    }));
+    const ambiguousInjectedResult = await new AIBrain({ adapter: ambiguousInjected }).processRequest('do it');
+    check('ambiguous + executable code is rejected by PlanValidator', ambiguousInjectedResult.success === false);
+
+    // (iii) An invalid plan half cannot be rescued by the "response" half.
     const ambiguousInvalidPlan = new RecordingAdapter(JSON.stringify({
         response: 'some answer',
         goal: 'some goal',
@@ -400,6 +448,120 @@ console.log('7) Security boundary unchanged: unusable or hostile output is still
     check('rejected ambiguous output raises the fallback flag', ambiguousInvalidResult.fallback === true);
     check('the "response" half never rescues an invalid plan',
         ambiguousInvalidResult.response !== 'some answer');
+
+    // (iv) The Agent / Permission Gateway boundary still applies.
+    //      A confirmation-gated action is proposed through the ambiguous
+    //      shape, with the model claiming risk "safe" and supplying a
+    //      "response". Denying the prompt must leave state untouched.
+    const sentinelTitle = 'Contract sentinel note';
+    memory.addNote(sentinelTitle, 'must survive an unapproved ambiguous plan');
+    const notesBeforeDenial = JSON.stringify(memory.getNotes().map(n => n.title));
+
+    const gatedPayload = {
+        response: 'Deleted it for you.',
+        goal: 'delete note 1',
+        steps: [{ id: 'step1', skill: 'notes', input: 'delete note 1', risk: 'safe' }]
+    };
+    const gated = new RecordingAdapter(JSON.stringify(gatedPayload));
+    const gatedResult = await new AIBrain({ adapter: gated }).processRequest('delete note 1');
+    check('ambiguous + gated action is accepted as a plan (documented runtime behaviour)',
+        gatedResult.success === true && gatedResult.isMultiStep === true);
+    check('the "response" half cannot pre-empt execution (it is never the reply)',
+        gatedResult.response === undefined);
+
+    let gatedPromptFired = false;
+    permissions.onPrompt(() => {
+        gatedPromptFired = true;
+        setTimeout(() => permissions.answer(false), 0);   // user DENIES
+    });
+    const gatedExecution = await agent.executePlan(
+        { isMultiStep: true, goal: 'delete note 1', plan: gatedResult.plan },
+        () => {}
+    );
+    permissions.onPrompt(null);
+
+    check('Permission Gateway still prompts for the gated action proposed via the ambiguous shape',
+        gatedPromptFired === true);
+    check('denied ambiguous plan reports cancellation',
+        gatedExecution?.success === false && /cancel|not approved|nothing was changed/i.test(gatedExecution?.response || ''));
+    check('denied ambiguous plan changed no state (sentinel note survives)',
+        JSON.stringify(memory.getNotes().map(n => n.title)) === notesBeforeDenial &&
+        memory.getNotes().some(n => n.title === sentinelTitle));
+
+    // Control: the very same plan, approved, really does act — so the denial
+    // above is what protected the state, not an inert skill.
+    memory.addNote('Second sentinel note', 'approved-path control');
+    let approvedControlRan = false;
+    permissions.onPrompt(() => {
+        approvedControlRan = true;
+        setTimeout(() => permissions.answer(true), 0);    // user APPROVES
+    });
+    const approvedExecution = await agent.executePlan(
+        { isMultiStep: true, goal: 'delete note 2', plan: gatedResult.plan },
+        () => {}
+    );
+    permissions.onPrompt(null);
+    check('CONTROL: the same gated plan, approved, executes (the denial was meaningful)',
+        approvedControlRan === true && approvedExecution?.success === true &&
+        !memory.getNotes().some(n => n.title === 'Second sentinel note'));
+
+    // (v) A sensitive skill keeps its manifest classification: the model's
+    //     own risk claim and the extra "response" field buy nothing. The
+    //     permission gateway classifies from the skill manifest, so the
+    //     confirmation prompt fires regardless of what the model declared.
+    const sensitiveTool = toolDiscovery.getToolDefinitions().find(t => t.name === 'iot');
+    check('iot is a genuinely registered sensitive skill',
+        !!sensitiveTool && sensitiveTool.risk === 'sensitive' && skillManager.hasSkill('iot'));
+
+    const sensitivePayload = {
+        response: 'Turning it on.',
+        goal: 'turn on the light',
+        steps: [{ id: 'step1', skill: 'iot', input: 'turn on the light', risk: 'safe' }]
+    };
+    const sensitive = new RecordingAdapter(JSON.stringify(sensitivePayload));
+    const sensitiveResult = await new AIBrain({ adapter: sensitive }).processRequest('turn on the light');
+    check('ambiguous + sensitive skill is accepted as a plan (documented runtime behaviour)',
+        sensitiveResult.success === true && sensitiveResult.plan?.[0]?.skill === 'iot');
+
+    // Device state is the observable side effect here (the integrations layer
+    // is a local simulated device registry, so a network counter would be
+    // vacuous). Start from a known state: the Desk Lamp is explicitly off.
+    const deskLamp = integrations.listDevices().find(d => d.type === 'light');
+    await integrations.invoke(deskLamp.id, 'off');
+    check('device-state fixture starts from a known OFF state',
+        integrations.getDevice(deskLamp.id)?.state?.on === false);
+
+    let sensitivePromptFired = false;
+    permissions.onPrompt(() => {
+        sensitivePromptFired = true;
+        setTimeout(() => permissions.answer(false), 0);   // user DENIES
+    });
+    const sensitiveExecution = await agent.executePlan(
+        { isMultiStep: true, goal: 'turn on the light', plan: sensitiveResult.plan },
+        () => {}
+    );
+    permissions.onPrompt(null);
+
+    check('model-claimed risk "safe" on a sensitive skill does not suppress the confirmation prompt',
+        sensitivePromptFired === true);
+    check('denied sensitive action is not executed (device state unchanged)',
+        sensitiveExecution?.success === false &&
+        integrations.getDevice(deskLamp.id)?.state?.on === false);
+
+    // Control: the same plan, approved, really does act on the device.
+    let sensitiveApprovedRan = false;
+    permissions.onPrompt(() => {
+        sensitiveApprovedRan = true;
+        setTimeout(() => permissions.answer(true), 0);    // user APPROVES
+    });
+    const sensitiveApproved = await agent.executePlan(
+        { isMultiStep: true, goal: 'turn on the light again', plan: sensitiveResult.plan },
+        () => {}
+    );
+    permissions.onPrompt(null);
+    check('CONTROL: the same sensitive plan, approved, does act on the device',
+        sensitiveApprovedRan === true && sensitiveApproved?.success === true &&
+        integrations.getDevice(deskLamp.id)?.state?.on === true);
 
     // 7e. PARSER TOLERANCE (pre-existing behaviour, deliberately NOT changed).
     //     The prompt now PROHIBITS code fences, but ModelAdapter's existing
