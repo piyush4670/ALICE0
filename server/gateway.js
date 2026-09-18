@@ -74,7 +74,7 @@ export const ERROR_CODES = {
 export const PROVIDER_CONFIG = {
     groq: {
         endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-        defaultModel: 'llama-3.3-70b-versatile',
+        defaultModel: 'openai/gpt-oss-120b',
         apiKeyEnv: 'GROQ_API_KEY'
     },
     openrouter: {
