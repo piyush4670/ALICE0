@@ -195,10 +195,16 @@ AI_PROVIDER=groq GROQ_API_KEY=... AI_MODEL=llama-3.3-70b-versatile node server/g
 #   <meta name="alice-gateway-url" content="http://127.0.0.1:3001">
 ```
 
-`CONFIG.ai.gateway.url` is intentionally empty, so the client posts to the
-same-origin path `/api/ai/generate`. A page served from another origin must
-inject the gateway URL as above — it is a **deployment** value resolved at
-runtime and is never hard-coded into `js/config.js`; only loopback hosts are
+Since Phase 6.3.4 the client targets the local gateway **explicitly**:
+`CONFIG.ai.gateway.url = 'http://127.0.0.1:3001'`, so the browser posts to
+`http://127.0.0.1:3001/api/ai/generate` and never to the frontend origin
+(e.g. `localhost:8080`, where the path does not exist). The gateway in turn
+allows CORS for **only** the local development frontend origins
+`http://localhost:8080` and `http://127.0.0.1:8080` (override server-side via
+`ALLOWED_ORIGINS`); other request origins are refused and never reflected.
+A deployment served from another origin overrides the client-side gateway URL
+through the existing runtime mechanisms above (`window.ALICE_GATEWAY_URL`,
+`<meta name="alice-gateway-url">`, `AI_GATEWAY_URL`) — only loopback hosts are
 accepted. Without a reachable gateway the AI Brain fails fast and the
 deterministic planner answers, so the UI never depends on the network.
 
@@ -282,7 +288,8 @@ python -m http.server 8080
 node tests/agent.test.mjs   # planner, agent loop, failure recovery, permissions (32 checks)
 node tests/part5.test.mjs   # Part 5: plugins, memory, settings, IoT, dev, security (34 checks)
 node tests/gateway.test.mjs # Phase 6.3.1 secure local AI gateway (44 checks)
-node tests/httpModelAdapter.test.mjs # Phase 6.3.2/6.3.4 HTTP model adapter + default wiring (144 checks)
+node tests/gatewayCors.test.mjs # Phase 6.3.4 minimal gateway CORS for the local dev frontend
+node tests/httpModelAdapter.test.mjs # Phase 6.3.2/6.3.4 HTTP model adapter + default wiring (151 checks)
 node tests/realProvider.test.mjs     # Phase 6.3.3 real provider connection (201 checks)
 node tests/voiceLifecycle.test.mjs   # Stage 1A voice lifecycle / Stop / races / capture-race / boot / settings (115 checks)
 node tests/load.test.mjs    # verifies all 43 modules import without errors
