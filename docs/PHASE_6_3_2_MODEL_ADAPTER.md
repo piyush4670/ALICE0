@@ -78,9 +78,10 @@ streaming is implemented in this phase).
 
 ### 3.1 Endpoint
 
-`POST <gateway-url>` where `<gateway-url>` defaults to the same-origin path
-`/api/ai/generate` and may be pointed at any loopback origin, e.g.
-`http://127.0.0.1:8787` (path is appended automatically).
+`POST <gateway-url>` where `<gateway-url>` defaults to the local development
+gateway `http://127.0.0.1:3001` (Phase 6.3.4 — the `/api/ai/generate` path is
+appended automatically) and may be pointed at any loopback origin, e.g.
+`http://127.0.0.1:8787`.
 
 ### 3.2 Request contract (whitelisted — nothing else is ever sent)
 
@@ -149,7 +150,7 @@ Client configuration lives in `CONFIG.ai.gateway` (`js/config.js`). It contains
 
 | Key | Default | Meaning |
 | :--- | :--- | :--- |
-| `gateway.url` | `''` | Empty = resolve at runtime (see below) |
+| `gateway.url` | `http://127.0.0.1:3001` | Local development gateway origin (Phase 6.3.4); runtime overrides below still win |
 | `gateway.path` | `/api/ai/generate` | Appended when only an origin is configured |
 | `gateway.timeout` | `8000` | ms before the request is aborted |
 | `gateway.maxResponseBytes` | `65536` | hard client-side response cap |

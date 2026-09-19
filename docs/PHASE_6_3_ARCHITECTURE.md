@@ -67,7 +67,7 @@ ALICE is primarily a real-time, voice-enabled assistant. Traditional LLM API lat
 
 ### Core Security Invariants:
 1. **Zero Client-Side Credentials:** No API keys, secret tokens, or authorization headers may exist in browser JavaScript, `localStorage`, `sessionStorage`, `index.html`, or client configuration files (`js/config.js`).
-2. **Local AI Gateway Proxy:** A lightweight local server acts as the credential boundary. The frontend speaks only to the local gateway via relative, same-origin endpoints (`/api/ai/generate`).
+2. **Local AI Gateway Proxy:** A lightweight local server acts as the credential boundary. The frontend speaks only to the local gateway (`http://127.0.0.1:3001`, Phase 6.3.4) via the fixed endpoint `POST /api/ai/generate`; the gateway allowlists only the local development frontend origins (`http://localhost:8080`, `http://127.0.0.1:8080`) for CORS.
 3. **Environment Isolation:** Keys reside exclusively in a server-side `.env` file loaded into `process.env` and excluded from version control via `.gitignore`.
 
 ### Architecture Flow:

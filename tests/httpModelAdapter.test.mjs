@@ -579,8 +579,8 @@ console.log('13) Credential leakage prevention');
     // Client configuration must not carry provider credentials
     const configSource = readFileSync(join(__dirname, '..', 'js', 'config.js'), 'utf8');
     check('CONFIG contains no provider api keys', !/apiKey|GROQ_API_KEY|OPENAI_API_KEY/i.test(configSource));
-    check('CONFIG.ai.gateway holds no secret values',
-        CONFIG.ai.gateway.url === '' && CONFIG.ai.gateway.trustToken === '');
+    check('CONFIG.ai.gateway holds no secret values (empty trust token; url is the loopback gateway only)',
+        CONFIG.ai.gateway.trustToken === '' && CONFIG.ai.gateway.url === 'http://127.0.0.1:3001');
     check('CONFIG.ai.adapter selects the http adapter by default', CONFIG.ai.adapter === 'http');
     // The default is a transport switch only: it must not smuggle any
     // provider credential or provider endpoint into browser configuration.
@@ -647,6 +647,64 @@ console.log('14) Gateway URL configuration');
     // Loopback variants are always permitted
     check('localhost loopback is permitted', resolveGatewayUrl({ gatewayUrl: 'http://localhost:8787/api/ai/generate' }) === 'http://localhost:8787/api/ai/generate');
     check('ipv6 loopback is permitted', resolveGatewayUrl({ gatewayUrl: 'http://[::1]:8787/api/ai/generate' }) === 'http://[::1]:8787/api/ai/generate');
+}
+
+// ==================================================================
+// 14b) Phase 6.3.4 — the local gateway is the explicit default destination
+// ==================================================================
+console.log('14b) Phase 6.3.4 local gateway wiring');
+{
+    // Ensure NO runtime override is present: this is the plain browser
+    // default deployment (no adapter config, no env, no page hook).
+    delete process.env.AI_GATEWAY_URL;
+    delete process.env.ALICE_GATEWAY_URL;
+    const originalGlobal = globalThis.ALICE_GATEWAY_URL;
+    delete globalThis.ALICE_GATEWAY_URL;
+
+    try {
+        const defaultAdapter = new HttpModelAdapter({ fetchImpl: realFetch });
+        check('default adapter resolves the configured local gateway URL',
+            defaultAdapter.getGatewayUrl() === 'http://127.0.0.1:3001/api/ai/generate');
+
+        const request = defaultAdapter.buildRequest('What is the capital of India?', { responseFormat: 'text' });
+        check('resulting browser request is POST http://127.0.0.1:3001/api/ai/generate',
+            request.url === 'http://127.0.0.1:3001/api/ai/generate' && request.init.method === 'POST');
+
+        const headerNames = Object.keys(request.init.headers).map(h => h.toLowerCase());
+        check('browser request sends no provider Authorization header', !headerNames.includes('authorization'));
+        check('browser request sends no provider API key header',
+            !headerNames.some(h => h.includes('api-key') || h.includes('apikey') || h.includes('bearer')));
+        check('browser request sends only Content-Type/Accept headers',
+            headerNames.length === 2 && headerNames.includes('content-type') && headerNames.includes('accept'));
+
+        const serialized = JSON.stringify({ url: request.url, body: request.body, headers: request.init.headers });
+        check('outbound contract carries no provider keys, tokens or provider hostnames',
+            !/authorization|apikey|api_key|bearer|access_token|groq|openai|openrouter|generativelanguage/i.test(serialized));
+
+        // Live end-to-end: bind the REAL gateway on exactly 127.0.0.1:3001
+        // (its documented local address) and let the unconfigured default
+        // adapter complete a generation against it. Skips gracefully when
+        // a gateway is already listening there.
+        const gw3001 = createGatewayServer({ port: 3001, host: '127.0.0.1', provider: 'mock' });
+        const bound = await new Promise((resolve) => {
+            gw3001.once('error', () => resolve(false));
+            gw3001.once('listening', () => resolve(true));
+            gw3001.listen(3001, '127.0.0.1');
+        });
+        if (bound) {
+            try {
+                const result = await defaultAdapter.generate('What is the capital of India?', { responseFormat: 'text' });
+                check('default adapter completes a real POST against http://127.0.0.1:3001', typeof result.text === 'string' && result.text.length > 0);
+            } finally {
+                await new Promise(r => gw3001.close(r));
+            }
+        } else {
+            console.log('    (port 3001 already in use — live binding check skipped)');
+            check('live binding check skipped because port 3001 is already in use', true);
+        }
+    } finally {
+        if (originalGlobal !== undefined) globalThis.ALICE_GATEWAY_URL = originalGlobal;
+    }
 }
 
 // ==================================================================
@@ -734,9 +792,8 @@ console.log('16) MockAdapter still works');
     check('fresh AIBrain defaults to the HttpModelAdapter', freshBrain.getAdapterName() === 'HttpModelAdapter');
     check('default adapter is the configured http adapter', CONFIG.ai.adapter === 'http');
     const defaultGatewayUrl = freshBrain.getAdapter().getGatewayUrl();
-    check('default adapter contacts only the local gateway (same-origin path or loopback URL)',
-        defaultGatewayUrl === '/api/ai/generate' ||
-        /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/.test(defaultGatewayUrl));
+    check('default adapter contacts the configured local gateway (never the frontend origin)',
+        defaultGatewayUrl === 'http://127.0.0.1:3001/api/ai/generate');
     check('offline-safe behaviour is preserved by the deterministic fallback', CONFIG.ai.fallbackEnabled === true);
 }
 

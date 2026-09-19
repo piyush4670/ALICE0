@@ -343,17 +343,17 @@
 
     <!-- Scripts -->
     <!--
-        Phase 6.3.5 — local gateway runtime wiring.
-        This is deployment wiring only, not AI architecture: it tells the
-        existing HttpModelAdapter (js/ai/httpModelAdapter.js) where the
-        already-running local gateway (server/gateway.js) lives when ALICE0
-        itself is being served from localhost/127.0.0.1 during local
-        development (e.g. `python -m http.server 8080`).
+        Phase 6.3.5/6.3.4 — local gateway runtime wiring.
+        This is deployment wiring only, not AI architecture. Since Phase
+        6.3.4, js/config.js already names the local development gateway
+        (CONFIG.ai.gateway.url = 'http://127.0.0.1:3001'), so the existing
+        HttpModelAdapter (js/ai/httpModelAdapter.js) posts /api/ai/generate
+        to the already-running local gateway (server/gateway.js) and never
+        to this frontend origin. This hook keeps that pin explicit at page
+        level for loopback origins (and is the place a non-local deployment
+        would inject a different gateway URL).
 
         - No provider URL, API key, or credential is ever placed here.
-        - The gateway URL is set ONLY for the local loopback origins; any
-          other deployment origin is left untouched so this never forces a
-          production page to talk to a developer's machine.
         - HttpModelAdapter still independently validates that the resolved
           URL targets a loopback host (see isAllowedGatewayHost) before it
           is ever used.

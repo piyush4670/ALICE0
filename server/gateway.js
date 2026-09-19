@@ -213,9 +213,14 @@ export function createGatewayServer(customConfig = {}) {
         // provider-specific key when set, so existing deployments keep working.
         apiKey: customConfig.apiKey || process.env.AI_API_KEY || null,
         ollamaHost: customConfig.ollamaHost || process.env.OLLAMA_HOST || 'http://localhost:11434',
+        // Phase 6.3.4 — the ONLY browser origins allowed to call the AI
+        // gateway cross-origin: the local ALICE0 development frontends.
+        // Exact-match allowlist; an origin not listed here is refused and
+        // never reflected. Override server-side only (constructor or
+        // ALLOWED_ORIGINS) — never from a request.
         allowedOrigins: customConfig.allowedOrigins || (process.env.ALLOWED_ORIGINS
-            ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim())
-            : ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173', 'http://localhost:8080', 'http://127.0.0.1:8080', 'http://localhost:3001', 'http://127.0.0.1:3001']),
+            ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
+            : ['http://localhost:8080', 'http://127.0.0.1:8080']),
         rateLimitPerMinute: Number(customConfig.rateLimitPerMinute || process.env.RATE_LIMIT_PER_MINUTE || 20),
         maxBodySize: Number(customConfig.maxBodySize || 32768), // 32 KB
         upstreamTimeoutMs: Number(customConfig.upstreamTimeoutMs || 10000), // 10s
@@ -360,17 +365,31 @@ function handleRequest(req, res, config, rateLimiter) {
     const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const pathname = parsedUrl.pathname;
 
-    // 1. Origin & CORS Handling
+    // 1. Origin & CORS Handling (Phase 6.3.4 — minimal, allowlist-only)
+    // ----------------------------------------------------------------
+    // localhost:8080 / 127.0.0.1:8080 (the local ALICE0 frontend) and
+    // 127.0.0.1:3001 (this gateway) are different origins, so the browser
+    // needs CORS for exactly ONE endpoint: POST /api/ai/generate.
+    //
+    //   - An Origin header that is not in the server-side allowlist is
+    //     refused outright and NEVER reflected (no `Access-Control-Allow-*`
+    //     header is emitted for it — and never `*`).
+    //   - CORS headers are emitted ONLY for the AI gateway endpoint, and
+    //     ONLY as an exact echo of an allowlisted origin.
+    //   - Method/path checks, content-type validation, rate limiting, trust
+    //     token and loopback restrictions below are unchanged.
     const origin = req.headers.origin;
-    if (origin) {
-        if (config.allowedOrigins.includes(origin)) {
-            res.setHeader('Access-Control-Allow-Origin', origin);
-            res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Local-Trust-Token');
-            res.setHeader('Access-Control-Max-Age', '86400');
-        } else {
-            return sendError(res, 403, ERROR_CODES.UNAUTHORIZED, 'Origin not allowed by gateway policy');
-        }
+    if (origin && !config.allowedOrigins.includes(origin)) {
+        return sendError(res, 403, ERROR_CODES.UNAUTHORIZED, 'Origin not allowed by gateway policy');
+    }
+
+    const isAiGenerateEndpoint = pathname === '/api/ai/generate';
+
+    if (origin && isAiGenerateEndpoint) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Local-Trust-Token');
+        res.setHeader('Access-Control-Max-Age', '86400');
     }
 
     // Handle preflight OPTIONS

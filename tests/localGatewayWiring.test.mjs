@@ -1,16 +1,26 @@
-// Tests for Phase 6.3.5 — local gateway runtime wiring.
+// Tests for Phase 6.3.5 / 6.3.4 — local gateway runtime wiring.
 // ------------------------------------------------------------------
-// This phase is deployment wiring ONLY: index.html sets
-// `window.ALICE_GATEWAY_URL` to the local gateway when ALICE0 itself is
-// served from localhost/127.0.0.1, so HttpModelAdapter (unmodified) picks
-// it up through its existing `window.ALICE_GATEWAY_URL` runtime hook.
+// The browser must post /api/ai/generate to the local gateway origin
+// (http://127.0.0.1:3001) and NEVER to the frontend origin (e.g.
+// localhost:8080, where the path does not exist and the AI Brain would
+// silently fall back to the deterministic planner).
+//
+// Two existing mechanisms cooperate (no duplicated resolution logic —
+// resolution itself lives only in HttpModelAdapter.resolveGatewayUrl):
+//   1. CONFIG.ai.gateway.url (Phase 6.3.4) names the local development
+//      gateway explicitly, so the adapter targets the gateway even when no
+//      page-level hook runs.
+//   2. index.html (Phase 6.3.5) pins the same URL at page level via
+//      `window.ALICE_GATEWAY_URL` when ALICE0 itself is served from
+//      localhost/127.0.0.1.
 //
 // These tests do NOT re-test HttpModelAdapter's own validation logic
 // (covered by tests/httpModelAdapter.test.mjs); they verify:
 //   1. The inline bootstrap script in index.html resolves the expected
 //      gateway URL for localhost / 127.0.0.1 and leaves other hosts alone.
 //   2. resolveGatewayUrl() honours window.ALICE_GATEWAY_URL end-to-end for
-//      both local hostnames.
+//      both local hostnames, and falls back to the CONFIGURED local
+//      gateway (never the frontend origin) without the hook.
 //   3. No provider URL, provider name, or credential-shaped string is
 //      present anywhere in the frontend source (index.html, js/**).
 import { readFileSync } from 'node:fs';
@@ -54,6 +64,7 @@ globalThis.Blob = class { constructor() {} };
 globalThis.URL.createObjectURL = () => 'blob:test';
 globalThis.URL.revokeObjectURL = () => {};
 
+const { CONFIG } = await import('../js/config.js');
 const { resolveGatewayUrl } = await import('../js/ai/httpModelAdapter.js');
 
 // ==================================================================
@@ -111,12 +122,18 @@ console.log('2) resolveGatewayUrl() end-to-end with window.ALICE_GATEWAY_URL');
         else globalThis.ALICE_GATEWAY_URL = originalGlobal;
     }
 
-    // Non-local (production) deployments are never forced onto the local
-    // gateway: with no runtime hook set, the client falls back to the
-    // same-origin default path rather than any hardcoded local URL.
+    // Phase 6.3.4: the CONFIGURED local gateway is the default destination.
+    // Without any page-level hook (or env/meta override) the adapter must
+    // still post to the gateway origin — never to the frontend origin, so
+    // local development can no longer degrade into a localhost:8080 404
+    // and the deterministic fallback.
     delete globalThis.ALICE_GATEWAY_URL;
-    check('without the runtime hook, resolution falls back to the same-origin default path',
-        resolveGatewayUrl() === '/api/ai/generate');
+    check('CONFIG.ai.gateway.url names the local development gateway explicitly',
+        CONFIG.ai.gateway.url === 'http://127.0.0.1:3001');
+    check('without the runtime hook, resolution uses the configured local gateway origin',
+        resolveGatewayUrl() === 'http://127.0.0.1:3001/api/ai/generate');
+    check('resolution always targets the gateway origin, never the frontend origin (:8080)',
+        !resolveGatewayUrl().includes(':8080'));
 }
 
 // ==================================================================

@@ -160,10 +160,15 @@ export const CONFIG = {
         // bearer tokens, or upstream provider URLs. The local gateway is
         // the only credential boundary (see docs/PHASE_6_3_1_GATEWAY.md).
         gateway: {
-            // Empty string = resolve at runtime from the deployment:
-            //   process.env.AI_GATEWAY_URL  ▶  window.ALICE_GATEWAY_URL
-            //   <meta name="alice-gateway-url">  ▶  default same-origin path.
-            url: '',
+            // Phase 6.3.4 — the local development gateway, named explicitly
+            // so the browser ALWAYS posts /api/ai/generate to the gateway
+            // origin (http://127.0.0.1:3001) and never to the frontend
+            // origin (e.g. localhost:8080, where the path does not exist).
+            // The adapter appends `path` and independently enforces that the
+            // host is a loopback gateway. A deployment served from another
+            // origin overrides this through the existing runtime mechanisms
+            // below — this is a routing value, never a credential.
+            url: 'http://127.0.0.1:3001',
             // Appended when a configured URL contains only an origin
             // (e.g. AI_GATEWAY_URL=http://127.0.0.1:8787).
             path: '/api/ai/generate',
