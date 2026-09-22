@@ -175,7 +175,11 @@ class Agent {
         });
 
         state.logActivity(`Task planned: ${plan.map(s => s.label).join(' → ')}`, 'info');
-        if (this._speak && CONFIG.agent.speakProgress) {
+        if (
+            this._speak &&
+            CONFIG.agent.speakProgress &&
+            plan.length > 1
+        ) {
             this._speak(this._planAnnouncement(plan));
         }
 
@@ -428,9 +432,16 @@ class Agent {
     _complete(plan) {
         const summary = this._extractText(this._context.summary);
         const doc = this._context.document;
+        const singleCalculatorResult = plan.length === 1 && plan[0].skill === 'calculator'
+            ? this._extractText(this._context[plan[0].contextKey || 'step_0'])
+            : '';
 
         let report;
-        if (summary && doc) {
+        if (singleCalculatorResult) {
+            report = /[.!?]$/.test(singleCalculatorResult)
+                ? singleCalculatorResult
+                : `${singleCalculatorResult}.`;
+        } else if (summary && doc) {
             report = `Done. I researched the topic, summarized the key points, and created the document "${doc.filename || 'alice-research.txt'}".`;
         } else if (summary) {
             report = `Done. Here's what I found: ${summary}`;
