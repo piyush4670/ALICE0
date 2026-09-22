@@ -64,6 +64,29 @@ const task = state.getTask();
 check('task status completed', task.status === 'completed');
 check('all steps completed', task.plan.every(s => s.status === 'completed'));
 check('progress 100', task.progress === 100);
+check('multi-step plan announcement retained', spoken.some(text => /handle this in 3 steps/i.test(text)));
+
+console.log('2a) Single-step calculator UX');
+const calculatorSpoken = [];
+const calculatorResult = await agent.executePlan({
+    goal: '2+2',
+    plan: [{
+        id: 'calculate',
+        label: 'calculator: 2+2',
+        skill: 'calculator',
+        action: 'calculate',
+        input: '2+2',
+        contextKey: 'calculation',
+        risk: 'safe',
+        retries: 0,
+        alternatives: []
+    }]
+}, text => calculatorSpoken.push(text));
+check('single-step calculator succeeds', calculatorResult && calculatorResult.success === true);
+check('single-step calculator has no plan announcement', calculatorSpoken.length === 0);
+check('single-step calculator returns skill result', calculatorResult.response === '2+2 = 4.');
+check('single-step calculator response hides skill label', !/calculator:/i.test(calculatorResult.response));
+check('single-step calculator response hides planner metadata', !/calculate|step|skill|done\. i completed/i.test(calculatorResult.response));
 
 console.log('3) Failure recovery');
 failSearch = true;
