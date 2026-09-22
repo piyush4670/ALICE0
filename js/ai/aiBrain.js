@@ -37,6 +37,9 @@
  *   - AI Brain NEVER directly accesses sensitive tools
  *   - AI Brain only PROPOSES actions; existing safety gates validate and execute
  *   - Model output is strictly untrusted data
+ *   - Interaction context (Part 4) is caller-supplied metadata only: it is
+ *     never detected or inferred here, and it grants no permissions and
+ *     bypasses PlanValidator / the Permission Gateway
  */
 import { CONFIG } from '../config.js';
 import { state } from '../state.js';
@@ -47,6 +50,47 @@ import { planValidator as defaultPlanValidator } from './planValidator.js';
 import { toolDiscovery as defaultToolDiscovery } from './toolDiscovery.js';
 import { memoryAdapter as defaultMemoryAdapter } from './memoryAdapter.js';
 import { contextBuilder as defaultContextBuilder } from './contextBuilder.js';
+
+/**
+ * Part 4 — explicit ContextBuilder input boundary.
+ *
+ * These are the pre-existing option fields on processRequest()/generatePlan()
+ * that are intended for ContextBuilder (Part 3 accepted them; they keep
+ * working). Anything else on the options object (timeout, signal,
+ * adapter-specific keys) is a model-adapter option and must never become a
+ * context-builder field — so the request path forwards only these keys
+ * instead of spreading arbitrary options into buildContext().
+ *
+ * `interactionContext` is deliberately NOT part of this list: it is passed
+ * through explicitly (and by reference) alongside this selection, per the
+ * Part 4 contract.
+ */
+const CONTEXT_BUILDER_OPTION_KEYS = Object.freeze([
+    'historyLimit',
+    'memoryLimit',
+    'includeTools',
+    'includeMemory',
+    'includeHistory',
+    'includeTaskState'
+]);
+
+/**
+ * Pick only the recognized ContextBuilder fields from an options object.
+ * Pure and non-mutating: returns a fresh object; the input is never modified.
+ *
+ * @param {Object} [options]
+ * @returns {Object} Only the ContextBuilder fields that were supplied
+ */
+function pickContextBuilderOptions(options = {}) {
+    const picked = {};
+    const source = (options !== null && typeof options === 'object') ? options : {};
+    for (const key of CONTEXT_BUILDER_OPTION_KEYS) {
+        if (source[key] !== undefined) {
+            picked[key] = source[key];
+        }
+    }
+    return picked;
+}
 
 /**
  * Adapter registry (Phase 6.3.2).
@@ -193,6 +237,19 @@ export class AIBrain {
      *
      * @param {string} request - User natural language text
      * @param {Object} [options]
+     * @param {Object} [options.interactionContext] - Explicit caller-supplied
+     *     interaction metadata (Part 4). Forwarded to ContextBuilder unchanged
+     *     (same reference). AIBrain performs NO detection, inference,
+     *     selection, or normalization of it — normalization/defaults belong
+     *     solely to the Part 2 createInteractionContext() factory inside
+     *     ContextBuilder. This is metadata only: it grants no permissions and
+     *     bypasses no validation.
+     * @param {number} [options.timeout] - Model-adapter timeout in ms
+     * @param {AbortSignal} [options.signal] - Model-adapter cancellation signal
+     * @param {...*} [options] - Additional model-adapter options are forwarded
+     *     to adapter.generate(); ContextBuilder fields (historyLimit,
+     *     memoryLimit, includeTools, includeMemory, includeHistory,
+     *     includeTaskState) keep working as before.
      * @returns {Promise<Object>} Processed result or fallback indicator
      */
     async processRequest(request, options = {}) {
@@ -217,10 +274,19 @@ export class AIBrain {
         }
 
         try {
-            // 1. Build bounded context
+            // 1. Build bounded context through an explicit ContextBuilder
+            //    input boundary (Part 4). Only the fields ContextBuilder
+            //    understands are forwarded — never an accidental spread of
+            //    arbitrary options, so model-adapter options (timeout,
+            //    signal, adapter-specific keys) cannot become context fields.
+            //    `interactionContext` is passed through exactly as supplied
+            //    (same reference, no mutation, no detection, no normalization
+            //    here): ContextBuilder's Part 2 factory remains the single
+            //    normalization boundary.
             const context = this._contextBuilder.buildContext({
                 request: text,
-                ...options
+                interactionContext: options.interactionContext,
+                ...pickContextBuilderOptions(options)
             });
 
             // 2. Generate structured plan or response via adapter
@@ -281,20 +347,41 @@ export class AIBrain {
 
     /**
      * Generate a structured plan for a goal.
+     *
+     * When an already-built context is supplied it is used exactly as-is:
+     * never rebuilt, and its interactionContext is never overwritten. When
+     * AIBrain builds the context itself, the caller-supplied
+     * options.interactionContext is forwarded to ContextBuilder unchanged —
+     * AIBrain adds no detection, selection, or normalization of its own.
+     *
      * @param {string} goal
-     * @param {Object} [context]
+     * @param {Object} [context] - Already-built context (used as-is if given)
      * @param {Object} [options]
+     * @param {Object} [options.interactionContext] - Explicit interaction metadata (Part 4)
      * @returns {Promise<{ isPlan: boolean, plan?: Object, isDirectResponse?: boolean, response?: string, raw: any }>}
      */
     async generatePlan(goal, context = null, options = {}) {
-        const fullContext = context || this._contextBuilder.buildContext({ request: goal });
+        // Preserve an already-built context untouched; otherwise build one,
+        // forwarding interactionContext explicitly (same pass-through rule as
+        // processRequest — ContextBuilder normalizes, AIBrain does not).
+        const fullContext = context || this._contextBuilder.buildContext({
+            request: goal,
+            interactionContext: options.interactionContext
+        });
         const prompt = this._contextBuilder.formatForPrompt(fullContext);
+
+        // `interactionContext` is prompt-context metadata consumed by
+        // ContextBuilder — it is not a model-adapter control — so it is the
+        // one option deliberately kept out of the adapter call. Every other
+        // option (timeout, signal, adapter-specific keys) flows through
+        // unchanged, preserving the existing adapter-options contract.
+        const { interactionContext: _interactionContext, ...adapterOptions } = options;
 
         const result = await this._adapter.generate(prompt, {
             responseFormat: 'plan',
             timeout: options.timeout || CONFIG.ai?.timeout || 5000,
             signal: options.signal || null,
-            ...options
+            ...adapterOptions
         });
 
         if (!result) {
