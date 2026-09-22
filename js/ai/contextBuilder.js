@@ -29,6 +29,8 @@
 import { state } from '../state.js';
 import { toolDiscovery as defaultToolDiscovery } from './toolDiscovery.js';
 import { memoryAdapter as defaultMemoryAdapter } from './memoryAdapter.js';
+import { ALICE_IDENTITY } from './aliceIdentity.js';
+import { createInteractionContext } from './interactionContext.js';
 
 class ContextBuilder {
     constructor({
@@ -49,6 +51,7 @@ class ContextBuilder {
      * @param {boolean} [options.includeMemory=true] - Whether to include memory context
      * @param {boolean} [options.includeHistory=true] - Whether to include conversation history
      * @param {boolean} [options.includeTaskState=true] - Whether to include active task state
+     * @param {Object} [options.interactionContext] - Explicit interaction metadata, normalized by createInteractionContext
      * @returns {Object} Structured context
      */
     buildContext(options = {}) {
@@ -59,10 +62,14 @@ class ContextBuilder {
             includeTools = true,
             includeMemory = true,
             includeHistory = true,
-            includeTaskState = true
+            includeTaskState = true,
+            interactionContext
         } = options;
 
         const cleanRequest = String(request || '').trim();
+        // This is explicit caller-supplied metadata only. The Part 2 factory
+        // supplies safe defaults and normalizes values; nothing is inferred.
+        const normalizedInteractionContext = createInteractionContext(interactionContext);
 
         // 1. Conversation history (bounded, accessed via state)
         let history = [];
@@ -122,6 +129,7 @@ class ContextBuilder {
             memory,
             tools,
             taskState,
+            interactionContext: normalizedInteractionContext,
             timestamp: Date.now()
         };
     }
@@ -194,6 +202,51 @@ class ContextBuilder {
     }
 
     /**
+     * Format the centralized ALICE identity for model context. This reads the
+     * declarative foundation directly instead of maintaining a second copy.
+     *
+     * @returns {string} Identity prompt section
+     */
+    _buildIdentitySection() {
+        const relationship = ALICE_IDENTITY.relationship || {};
+        const formatList = values => Array.isArray(values) ? values.join('; ') : '';
+
+        return [
+            'ALICE Identity:',
+            `- Name: ${ALICE_IDENTITY.name}`,
+            `- Persona: ${ALICE_IDENTITY.persona}`,
+            `- Roles: ${formatList(ALICE_IDENTITY.roles)}`,
+            `- Personality: ${formatList(ALICE_IDENTITY.personality)}`,
+            `- Philosophy: ${formatList(ALICE_IDENTITY.philosophy)}`,
+            `- Character principles: ${formatList(ALICE_IDENTITY.characterPrinciples)}`,
+            `- Relationship qualities: ${formatList(relationship.qualities)}`,
+            `- Relationship boundaries: ${formatList(relationship.boundaries)}`
+        ].join('\n');
+    }
+
+    /**
+     * Format explicit, normalized interaction metadata without treating it as
+     * a detector result or an instruction that can alter runtime boundaries.
+     *
+     * @param {Object} [interactionContext]
+     * @returns {string} Interaction-context prompt section
+     */
+    _buildInteractionContextSection(interactionContext) {
+        const normalized = createInteractionContext(interactionContext);
+
+        return [
+            'Interaction Context:',
+            `- Turn type: ${normalized.turnType}`,
+            `- Intent: ${normalized.intent}`,
+            `- Response depth: ${normalized.responseDepth}`,
+            `- Personality mode: ${normalized.mode || 'none'}`,
+            `- Broad contextual signal: ${normalized.emotionalSignal}`,
+            `- Source: ${normalized.source}`,
+            '- This is interaction metadata, not a claim that ALICE experiences human emotions.'
+        ].join('\n');
+    }
+
+    /**
      * Format the context object into a structured prompt representation.
      * @param {Object} context
      * @returns {string} Formatted prompt text
@@ -209,6 +262,10 @@ class ContextBuilder {
             'using the registered tools only when the request actually requires an action. ' +
             'You must return only valid declarative data. Do not execute arbitrary code.'
         );
+
+        // Centralized identity and explicit interaction metadata (Part 3).
+        sections.push(this._buildIdentitySection());
+        sections.push(this._buildInteractionContextSection(context?.interactionContext));
 
         // Explicit machine-readable output contract (Phase 6.4)
         sections.push(this._buildOutputContract(tools));
