@@ -21,6 +21,7 @@ import { memory } from './memory.js';
 import { agent } from './agent.js';
 import { permissions } from './permissions.js';
 import { aiBrain } from './ai/aiBrain.js';
+import { createInteractionContext } from './ai/interactionContext.js';
 import { delay } from './utils.js';
 
 class ConversationManager {
@@ -604,6 +605,11 @@ class ConversationManager {
      * `token` lets in-flight speech be suppressed if the user pressed Stop
      * while the pipeline was running. THE PIPELINE ITSELF IS UNCHANGED:
      * AI Brain → Plan Validator → Agent → Permission Gateway → Skills.
+     *
+     * Part 5 only adds fixed Interaction Context metadata on the AI Brain
+     * call. It does not detect intent, emotion, turn type, or source, and
+     * it does not select a mode or response depth. Execution behaviour
+     * is unchanged.
      */
     async _processWithSkills(text, token = null) {
         state.set('aliceState', CONFIG.states.UNDERSTANDING);
@@ -613,7 +619,22 @@ class ConversationManager {
         // the Plan Validator before reaching the Agent.
         if (CONFIG.ai?.enabled && aiBrain.isEnabled()) {
             try {
-                const aiResult = await aiBrain.processRequest(text);
+                // Part 5: runtime plumbing only. These values are fixed caller
+                // input — not inferred from the request, history, or voice.
+                // The factory below is the single normalization boundary.
+                // Voice-aware source handling is a later part.
+                const interactionContext = createInteractionContext({
+                    turnType: 'new',
+                    intent: 'unknown',
+                    responseDepth: 'quick',
+                    mode: null,
+                    emotionalSignal: 'neutral',
+                    source: 'text'
+                });
+
+                const aiResult = await aiBrain.processRequest(text, {
+                    interactionContext
+                });
                 if (aiResult && aiResult.success) {
                     if (aiResult.isMultiStep && Array.isArray(aiResult.plan) && aiResult.plan.length > 0) {
                         // Pass validated plan to existing Agent
