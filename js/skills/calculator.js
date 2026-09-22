@@ -1,6 +1,24 @@
 /**
  * Calculator Skill
  * Handles mathematical calculations
+ *
+ * ROUTING RULE — mathematical content decides, framing words do not:
+ *
+ * The calculator claims a request only when the text carries mathematical
+ * *content*: an arithmetic expression (operand operator operand, written
+ * with symbols such as "25 * 4" or with words such as "20 divided by 4")
+ * or a math keyword that appears in no ordinary sentence ("calculate",
+ * "15 percent of", "square root", "sqrt", ...).
+ *
+ * Question framing alone is never a trigger. "what is ...", "how much
+ * is ..." and friends also introduce knowledge questions — "What is the
+ * capital of India?", "What is photosynthesis?" — which must reach the
+ * knowledge/search path instead of being answered with
+ * "Could not understand the calculation". Numbers in prose are not
+ * arithmetic either: they only count when an operator joins two operands.
+ *
+ * Word operators below are exactly the ones execute() knows how to
+ * evaluate, so anything routed here can actually be computed.
  */
 import { state } from '../state.js';
 
@@ -8,18 +26,21 @@ export const calculator = {
     name: 'calculator',
     description: 'Performs mathematical calculations',
     patterns: [
+        // Explicit request to compute something.
         /calculate/i,
-        /what is\s+/i,
-        /how much is\s+/i,
-        /\d+\s*[\+\-\*\/\^]\s*\d+/,
-        /percent(age)? of/i,
-        /square root/i,
-        /cube root/i,
-        /sqrt/i,
-        /\d+\s+times\s+\d+/i,
-        /\d+\s+plus\s+\d+/i,
-        /\d+\s+minus\s+\d+/i,
-        /\d+\s+divided\s+by\s+\d+/i
+
+        // Math keywords that never occur in ordinary prose.
+        /\b(?:square|cube)\s+root\b/i,
+        /\bsqrt\b/i,
+        /\b\d[\d,.]*\s*percent(?:age)?\s+of\b/i,          // "15 percent of 200"
+
+        // Arithmetic with symbol operators: "2 + 2", "25 * 4", "5 ^ 3".
+        /\d\s*[+\-*/^×÷]\s*\d/,
+
+        // Arithmetic spelled with words: "10 plus 5", "20 divided by 4",
+        // "10 times 8", "$20 plus $5". The operator must join two numbers,
+        // so prose that merely contains a number never matches.
+        /\d[\d,.]*\s*(?:\$\s*)?(?:plus|minus|times|multiplied\s+by|divided\s+by)\s+(?:\$\s*)?\d[\d,.]*/i
     ],
 
     /**
