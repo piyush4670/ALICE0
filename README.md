@@ -286,6 +286,7 @@ python -m http.server 8080
 
 ```bash
 node tests/agent.test.mjs   # planner, agent loop, failure recovery, permissions (32 checks)
+node tests/calculatorRouting.test.mjs # calculator routing: math reaches the calculator, "what is …" knowledge questions do not (62 checks)
 node tests/part5.test.mjs   # Part 5: plugins, memory, settings, IoT, dev, security (34 checks)
 node tests/gateway.test.mjs # Phase 6.3.1 secure local AI gateway (44 checks)
 node tests/gatewayCors.test.mjs # Phase 6.3.4 minimal gateway CORS for the local dev frontend
