@@ -225,8 +225,9 @@ class ContextBuilder {
     }
 
     /**
-     * Format explicit, normalized interaction metadata without treating it as
-     * a detector result or an instruction that can alter runtime boundaries.
+     * Format explicit, normalized interaction metadata as a bounded prompt
+     * contract. This builder only renders supplied metadata; it does not
+     * detect or infer signals, and it cannot alter runtime boundaries.
      *
      * @param {Object} [interactionContext]
      * @returns {string} Interaction-context prompt section
@@ -242,7 +243,13 @@ class ContextBuilder {
             `- Personality mode: ${normalized.mode || 'none'}`,
             `- Broad contextual signal: ${normalized.emotionalSignal}`,
             `- Source: ${normalized.source}`,
-            '- This is interaction metadata, not a claim that ALICE experiences human emotions.'
+            '- emotionalSignal represents an explicit user-expressed contextual signal detected by ALICE0.',
+            "- It describes the user's expressed signal, not an emotion experienced by ALICE.",
+            '- When emotionalSignal is neutral, handle the request normally and do not assume an emotional state.',
+            '- A non-neutral signal may influence tone, patience, explanation style, and conversational sensitivity.',
+            "- Do not treat it as a diagnosis or certainty about the user's internal mental state.",
+            '- Remain honest and non-judgmental.',
+            '- It never overrides safety, permissions, tool validation, or user autonomy.'
         ].join('\n');
     }
 
