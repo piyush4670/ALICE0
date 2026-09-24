@@ -9,7 +9,8 @@
 //   - the other context fields follow the current contract: turnType from
 //     the Part 7A lifecycle, source from the entry path, responseDepth from
 //     the Part 7D detector and mode from the Part 7E detector (both for the
-//     exact request text), emotionalSignal fixed at "neutral"
+//     exact request text). These Part 7C fixtures carry no explicit emotional
+//     phrase, so emotionalSignal stays "neutral" (Part 8A).
 //   - detection never executes a skill, the agent, or any permission gate
 //   - a detector failure falls back to unknown/low and never crashes
 import assert from 'node:assert/strict';
@@ -388,15 +389,30 @@ describe('ConversationManager intent detection integration (Part 7C)', { concurr
             'responseDepth must come from detectResponseDepth(text) (Part 7D)');
         assert.match(code, /mode:\s*detectPersonalityMode\(text\)\.mode/,
             'mode must come from detectPersonalityMode(text) (Part 7E)');
-        // The hardcoded placeholders are gone; the fixed safe default remains.
+        assert.match(source,
+            /import\s*\{\s*detectEmotionalSignal\s*\}\s*from\s*['"]\.\/ai\/emotionalSignalDetector\.js['"]/);
+        assert.equal(
+            code.match(/detectEmotionalSignal\s*\(/g).length,
+            1,
+            'there is exactly one detectEmotionalSignal call'
+        );
+        assert.match(code, /emotionalSignal:\s*detectEmotionalSignal\(text\)\.signal/,
+            'emotionalSignal must come from detectEmotionalSignal(text) (Part 8A)');
+        // The hardcoded placeholders are gone.
         assert.doesNotMatch(code, /intent:\s*'unknown'/);
         assert.doesNotMatch(code, /responseDepth:\s*'quick'/);
         assert.doesNotMatch(code, /mode:\s*null/);
-        assert.match(code, /emotionalSignal:\s*'neutral'/);
+        assert.doesNotMatch(code, /emotionalSignal:\s*'neutral'/);
         assert.match(code, /source\b/);
         // Detection happens at the integration point, never inside the factory.
         assert.match(code, /_hasHadInteraction/);
-        assert.doesNotMatch(code, /detectEmotion|classifyIntent|sentiment|selectMode|selectDepth/);
+        // Part 8A calls the detector by name. Strip that allowed identifier,
+        // then apply the original forbidden-pattern guard unchanged so
+        // conversation.js still cannot reimplement classification.
+        assert.doesNotMatch(
+            code.replace(/detectEmotionalSignal/g, ''),
+            /detectEmotion|classifyIntent|sentiment|selectMode|selectDepth/
+        );
         assert.doesNotMatch(source, /from\s*['"]\.\/ai\/httpModelAdapter\.js['"]/);
         assert.doesNotMatch(source, /gateway\.js/);
     });

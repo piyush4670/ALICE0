@@ -25,6 +25,7 @@ import { createInteractionContext } from './ai/interactionContext.js';
 import { detectIntent } from './ai/intentDetector.js';
 import { detectResponseDepth } from './ai/responseDepthDetector.js';
 import { detectPersonalityMode } from './ai/personalityModeDetector.js';
+import { detectEmotionalSignal } from './ai/emotionalSignalDetector.js';
 import { delay } from './utils.js';
 
 class ConversationManager {
@@ -618,8 +619,10 @@ class ConversationManager {
      * Part 6 supplies Interaction Context metadata on the AI Brain call.
      * Source is explicitly passed by the command-entry path; intent comes
      * from the deterministic Part 7C detector; responseDepth comes from the
-     * deterministic Part 7D detector; all other values remain fixed. Nothing
-     * is inferred by the factory, and execution behaviour is unchanged.
+     * deterministic Part 7D detector; mode comes from the deterministic
+     * Part 7E detector; emotionalSignal comes from the deterministic
+     * Part 8A detector (explicit phrases only). Nothing is inferred by the
+     * factory, and execution behaviour is unchanged.
      */
     async _processWithSkills(text, token = null, source = 'text') {
         state.set('aliceState', CONFIG.states.UNDERSTANDING);
@@ -639,9 +642,10 @@ class ConversationManager {
                 // request changes it, never the apparent complexity of the
                 // question. Part 7E: mode comes from the deterministic
                 // personality-mode detector (explicit cues only).
-                // All remaining values are fixed caller input,
-                // never inferred. The factory below is the single
-                // normalization boundary and never performs detection itself.
+                // Part 8A: emotionalSignal comes from the deterministic
+                // emotional-signal detector — explicit phrases only, never
+                // inferred. The factory below is the single normalization
+                // boundary and never performs detection itself.
                 const turnType = this._hasHadInteraction ? 'follow_up' : 'new';
                 this._hasHadInteraction = true;
                 const interactionContext = createInteractionContext({
@@ -649,7 +653,7 @@ class ConversationManager {
                     intent: detectIntent(text).intent,
                     responseDepth: detectResponseDepth(text).depth,
                     mode: detectPersonalityMode(text).mode,
-                    emotionalSignal: 'neutral',
+                    emotionalSignal: detectEmotionalSignal(text).signal,
                     source
                 });
 
