@@ -1,13 +1,15 @@
-// Part 6 + 7A: ConversationManager → Interaction Context source plumbing + deterministic turn lifecycle
+// Part 6 + 7A + 7C: ConversationManager → Interaction Context source plumbing
+// + deterministic turn lifecycle + deterministic intent detection.
 // Run: node tests/conversationInteractionContext.test.mjs
 //
 // Focused ConversationManager tests only. The singleton AIBrain.processRequest
 // is stubbed so the HTTP adapter never runs — zero network access, verified
 // with a fetch spy. ConversationManager must create the context with
-// createInteractionContext() using fixed safe values plus an explicitly supplied
-// source, then forward that object. It must not detect intent, emotion, or source,
-// and it must not select a mode or response depth.
-// Part 7A adds deterministic turn lifecycle: first command => new, subsequent => follow_up.
+// createInteractionContext() using fixed safe values, an explicitly supplied
+// source, and the Part 7C detected intent, then forward that object.
+// It must not detect emotion or source, and it must not select a mode or
+// response depth. Part 7A adds deterministic turn lifecycle: first command
+// => new, subsequent => follow_up.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, test } from 'node:test';
@@ -80,37 +82,40 @@ const { skillManager } = await import('../js/skillManager.js');
 const { state } = await import('../js/state.js');
 const { tts } = await import('../js/tts.js');
 const { createInteractionContext } = await import('../js/ai/interactionContext.js');
+const { detectIntent } = await import('../js/ai/intentDetector.js');
 const { CONFIG } = await import('../js/config.js');
 
 globalThis.setInterval = nativeSetInterval;
 
-// Fixed fields except turnType which is now deterministic lifecycle
+// Fixed fields. turnType comes from the Part 7A lifecycle and intent from
+// the Part 7C deterministic detector (supplied per request text below) —
+// both are explicit parameters, never inferred inside the factory.
 const FIXED_FIELDS_WITHOUT_TURN = Object.freeze({
-    intent: 'unknown',
     responseDepth: 'quick',
     mode: null,
     emotionalSignal: 'neutral'
 });
 
-function contextInput(source = 'text', turnType = 'new') {
-    return { turnType, ...FIXED_FIELDS_WITHOUT_TURN, source };
+function contextInput(source = 'text', turnType = 'new', intent = 'unknown') {
+    return { turnType, intent, ...FIXED_FIELDS_WITHOUT_TURN, source };
 }
 
-function part6Context(source = 'text', turnType = 'new') {
-    return createInteractionContext(contextInput(source, turnType));
+function part6Context(source = 'text', turnType = 'new', intent = 'unknown') {
+    return createInteractionContext(contextInput(source, turnType, intent));
 }
 
-function assertPart6Context(received, expectedSource = 'text', expectedTurnType = 'new', label = 'interactionContext') {
+function assertPart6Context(received, expectedSource = 'text', expectedTurnType = 'new',
+    expectedIntent = 'unknown', label = 'interactionContext') {
     assert.ok(received && typeof received === 'object', `${label} must be an object`);
     assert.equal(Object.isFrozen(received), true, `${label} must be the frozen factory object`);
     assert.deepEqual(
         received,
-        part6Context(expectedSource, expectedTurnType),
-        `${label} must equal createInteractionContext(Part 6/7A values)`
+        part6Context(expectedSource, expectedTurnType, expectedIntent),
+        `${label} must equal createInteractionContext(Part 6/7A/7C values)`
     );
 
     const { request, ...documented } = received;
-    assert.deepEqual(documented, contextInput(expectedSource, expectedTurnType));
+    assert.deepEqual(documented, contextInput(expectedSource, expectedTurnType, expectedIntent));
     assert.equal(request, '');
     assert.deepEqual(Object.keys(received).sort(), [
         'emotionalSignal', 'intent', 'mode', 'request', 'responseDepth', 'source', 'turnType'
@@ -129,15 +134,18 @@ function assertPart6Context(received, expectedSource = 'text', expectedTurnType 
 }
 
 function assertForwardedCall(call, expectedText, expectedSource = 'text', expectedTurnType = 'new') {
+    // Part 7C: the forwarded intent must equal the deterministic detector's
+    // verdict for this exact text.
+    const expectedIntent = detectIntent(expectedText).intent;
     assert.equal(call.text, expectedText);
     assert.deepEqual(
         Object.keys(call.options),
         ['interactionContext'],
         'ConversationManager must forward only interactionContext'
     );
-    assertPart6Context(call.options.interactionContext, expectedSource, expectedTurnType);
+    assertPart6Context(call.options.interactionContext, expectedSource, expectedTurnType, expectedIntent);
     assert.equal(call.options.interactionContext.turnType, expectedTurnType);
-    assert.equal(call.options.interactionContext.intent, 'unknown');
+    assert.equal(call.options.interactionContext.intent, expectedIntent);
     assert.equal(call.options.interactionContext.responseDepth, 'quick');
     assert.equal(call.options.interactionContext.mode, null);
     assert.equal(call.options.interactionContext.emotionalSignal, 'neutral');
@@ -206,7 +214,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
                 assert.equal(stub.calls.length, 1);
                 assertForwardedCall(stub.calls[0], 'Explain photosynthesis', 'text', 'new');
                 assert.deepEqual(stub.calls[0].options, {
-                    interactionContext: part6Context('text', 'new')
+                    interactionContext: part6Context('text', 'new', 'information')
                 });
 
                 assert.equal(state.get('voice.lastAliceResponse'), answer);
@@ -247,8 +255,8 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             assert.equal(stub.calls.length, 2);
             const first = stub.calls[0].options.interactionContext;
             const second = stub.calls[1].options.interactionContext;
-            assertPart6Context(first, 'text', 'new');
-            assertPart6Context(second, 'text', 'follow_up');
+            assertPart6Context(first, 'text', 'new', 'information');
+            assertPart6Context(second, 'text', 'follow_up', 'information');
             assert.notStrictEqual(first, second, 'the factory must return a fresh object per call');
             // Other fields same, turnType differs deterministically
             assert.equal(first.intent, second.intent);
@@ -336,17 +344,24 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
         assert.match(code, /_hasHadInteraction/);
         assert.match(code, /turnType/);
         assert.match(code, /'follow_up'/);
-        // Must still have fixed fields
-        assert.match(code, /intent:\s*'unknown'/);
+        // Part 7C: intent comes from the deterministic detector; the
+        // hardcoded 'unknown' placeholder is gone. All other fields fixed.
+        assert.match(
+            source,
+            /import\s*\{\s*detectIntent\s*\}\s*from\s*['"]\.\/ai\/intentDetector\.js['"]/
+        );
+        assert.match(code, /intent:\s*detectIntent\(text\)\.intent/);
+        assert.doesNotMatch(code, /intent:\s*'unknown'/);
         assert.match(code, /responseDepth:\s*'quick'/);
         assert.match(code, /mode:\s*null/);
         assert.match(code, /emotionalSignal:\s*'neutral'/);
         assert.match(code, /source/);
 
-        // No inference logic
+        // No inference logic beyond the Part 7C detector (no emotion, source,
+        // mode, or depth detection; no probabilistic/LLM classification).
         assert.doesNotMatch(source, /INTERACTION_(?:INTENTS|RESPONSE_DEPTHS|MODES|EMOTIONAL_SIGNALS|SOURCES|CONTEXT_DEFAULTS)/);
         assert.doesNotMatch(source, /normalizeEnum|normalizeRequest|normalizeMode/);
-        assert.doesNotMatch(source, /detectIntent|detectEmotion|detectSource|classifyIntent|classifySource|sentiment|selectMode|selectDepth|inferSource|personalityMode/);
+        assert.doesNotMatch(source, /detectEmotion|detectSource|classifyIntent|classifySource|sentiment|selectMode|selectDepth|inferSource|personalityMode|probabilit|embedding/);
         // The old Part 6 check for absence of follow_up is now obsolete; Part 7A introduces follow_up deterministically
         assert.doesNotMatch(source, /from\s*['\"]\.\/ai\/planValidator\.js['\"]/);
         assert.doesNotMatch(source, /from\s*['\"]\.\/ai\/httpModelAdapter\.js['\"]/);
@@ -557,7 +572,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             conversation.processText('Explain photosynthesis');
             await stub.completed;
             assert.equal(stub.calls.length, 1);
-            assertPart6Context(stub.calls[0].options.interactionContext, 'text', 'new');
+            assertPart6Context(stub.calls[0].options.interactionContext, 'text', 'new', 'information');
         });
         assert.equal(fetchCalls, 0);
     });
