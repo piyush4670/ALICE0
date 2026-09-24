@@ -23,6 +23,7 @@ import { permissions } from './permissions.js';
 import { aiBrain } from './ai/aiBrain.js';
 import { createInteractionContext } from './ai/interactionContext.js';
 import { detectIntent } from './ai/intentDetector.js';
+import { detectResponseDepth } from './ai/responseDepthDetector.js';
 import { delay } from './utils.js';
 
 class ConversationManager {
@@ -615,9 +616,9 @@ class ConversationManager {
      *
      * Part 6 supplies Interaction Context metadata on the AI Brain call.
      * Source is explicitly passed by the command-entry path; intent comes
-     * from the deterministic Part 7C detector; all other values remain
-     * fixed. Nothing is inferred by the factory, and execution behaviour
-     * is unchanged.
+     * from the deterministic Part 7C detector; responseDepth comes from the
+     * deterministic Part 7D detector; all other values remain fixed. Nothing
+     * is inferred by the factory, and execution behaviour is unchanged.
      */
     async _processWithSkills(text, token = null, source = 'text') {
         state.set('aliceState', CONFIG.states.UNDERSTANDING);
@@ -631,16 +632,19 @@ class ConversationManager {
                 // subsequent commands in the same conversation are 'follow_up'.
                 // Source is explicitly supplied by the command entry path.
                 // Part 7C: intent comes from the deterministic detector
-                // (pure, conservative, LLM/skill/permission independent);
-                // all remaining values are fixed caller input, never inferred.
-                // The factory below is the single normalization boundary and
-                // never performs detection itself.
+                // (pure, conservative, LLM/skill/permission independent).
+                // Part 7D: responseDepth comes from the deterministic
+                // response-depth detector — only explicit wording in the
+                // request changes it, never the apparent complexity of the
+                // question. All remaining values are fixed caller input,
+                // never inferred. The factory below is the single
+                // normalization boundary and never performs detection itself.
                 const turnType = this._hasHadInteraction ? 'follow_up' : 'new';
                 this._hasHadInteraction = true;
                 const interactionContext = createInteractionContext({
                     turnType,
                     intent: detectIntent(text).intent,
-                    responseDepth: 'quick',
+                    responseDepth: detectResponseDepth(text).depth,
                     mode: null,
                     emotionalSignal: 'neutral',
                     source
