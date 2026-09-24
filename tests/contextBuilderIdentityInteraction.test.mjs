@@ -170,6 +170,43 @@ test('normalizes invalid interaction values through the Part 2 factory', () => {
     assert.ok(prompt.includes('- Source: text'));
 });
 
+test('Part 7B: preserves an explicitly supplied intent in the normalized interaction context', () => {
+    // Every allowed intent value survives buildContext() unchanged inside the
+    // normalized interaction context, and the prompt renders exactly the
+    // preserved value — never an inferred one.
+    for (const intent of ['information', 'action', 'conversation', 'clarification', 'unknown']) {
+        const built = contextBuilder.buildContext({
+            request: 'What is quantum computing?',
+            interactionContext: createInteractionContext({ intent }),
+            includeTools: false,
+            includeMemory: false,
+            includeHistory: false,
+            includeTaskState: false
+        });
+
+        assert.deepEqual(built.interactionContext, createInteractionContext({ intent }),
+            `normalized context must preserve the explicit intent "${intent}"`);
+        assert.ok(Object.isFrozen(built.interactionContext));
+
+        const prompt = contextBuilder.formatForPrompt(built);
+        assert.ok(prompt.includes(`- Intent: ${intent}`),
+            `prompt must render the preserved intent "${intent}"`);
+    }
+});
+
+test('Part 7B: buildContext never infers intent from the request text', () => {
+    const built = contextBuilder.buildContext({
+        request: 'What is quantum computing?',
+        includeTools: false,
+        includeMemory: false,
+        includeHistory: false,
+        includeTaskState: false
+    });
+
+    assert.equal(built.interactionContext.intent, 'unknown');
+    assert.deepEqual(built.interactionContext, createInteractionContext());
+});
+
 test('keeps legacy ContextBuilder prompt sections and callers compatible', () => {
     // This shape intentionally has no interactionContext, matching contexts
     // produced by callers before Part 3.

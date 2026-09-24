@@ -84,6 +84,147 @@ test('normalizes invalid intent values to the safe default', () => {
     }
 });
 
+// --- Part 7B: explicit intent context plumbing (focused, per-value) ---------
+//
+// The intent field must be able to safely receive an explicitly supplied
+// value in the future. These focused tests pin that contract per value:
+// valid explicit intents are preserved verbatim, missing/invalid ones fall
+// back to the documented 'unknown' default, and request text NEVER infers
+// or overrides intent. No intent detection exists in this module.
+
+test('Part 7B: explicit valid intent "information" is preserved', () => {
+    const ctx = createInteractionContext({ intent: 'information' });
+    assert.equal(ctx.intent, 'information');
+    // Supplying an intent selects or alters nothing else.
+    assert.deepEqual(ctx, { ...EXPECTED_DEFAULTS, intent: 'information' });
+    assert.deepEqual(Object.keys(ctx), EXPECTED_KEYS);
+    assert.ok(Object.isFrozen(ctx));
+});
+
+test('Part 7B: explicit valid intent "action" is preserved', () => {
+    const ctx = createInteractionContext({ intent: 'action' });
+    assert.equal(ctx.intent, 'action');
+    assert.deepEqual(ctx, { ...EXPECTED_DEFAULTS, intent: 'action' });
+});
+
+test('Part 7B: explicit valid intent "conversation" is preserved', () => {
+    const ctx = createInteractionContext({ intent: 'conversation' });
+    assert.equal(ctx.intent, 'conversation');
+    assert.deepEqual(ctx, { ...EXPECTED_DEFAULTS, intent: 'conversation' });
+});
+
+test('Part 7B: explicit valid intent "clarification" is preserved', () => {
+    const ctx = createInteractionContext({ intent: 'clarification' });
+    assert.equal(ctx.intent, 'clarification');
+    assert.deepEqual(ctx, { ...EXPECTED_DEFAULTS, intent: 'clarification' });
+});
+
+test('Part 7B: missing intent becomes "unknown"', () => {
+    // Absent key, explicit undefined, and null all mean "no intent supplied".
+    assert.equal(createInteractionContext({}).intent, 'unknown');
+    assert.equal(createInteractionContext({ intent: undefined }).intent, 'unknown');
+    assert.equal(createInteractionContext({ intent: null }).intent, 'unknown');
+    // Supplying other fields never implies an intent.
+    assert.equal(createInteractionContext({
+        request: 'hello',
+        turnType: 'follow_up',
+        source: 'voice'
+    }).intent, 'unknown');
+});
+
+test('Part 7B: invalid intent becomes "unknown"', () => {
+    // Wrong casing, near-misses, and wrong types all normalize to 'unknown'.
+    for (const invalid of ['Information', 'INFORMATION', 'question', 'answer', 'command',
+        'greeting', 'smalltalk', '', 0, 42, true, {}, [], ['information']]) {
+        assert.equal(createInteractionContext({ intent: invalid }).intent, 'unknown',
+            `invalid intent ${JSON.stringify(invalid)}`);
+    }
+});
+
+test('Part 7B: request text never infers or overrides intent', () => {
+    // Wording that looks like any of the allowed intents must not set intent.
+    const requests = [
+        'What is quantum computing?',                        // looks informational
+        'Open the notes app and add milk to the list.',      // looks actionable
+        'Hi there! How are you doing today?',                // looks conversational
+        'Sorry, could you clarify what you meant?'           // looks like clarification
+    ];
+    for (const request of requests) {
+        const ctx = createInteractionContext({ request });
+        assert.equal(ctx.intent, 'unknown', `request must not infer intent: ${request}`);
+        // The context equals the pure defaults plus the request — nothing else.
+        assert.deepEqual(ctx, { ...EXPECTED_DEFAULTS, request });
+    }
+
+    // An explicit intent always wins over the request wording.
+    const explicit = createInteractionContext({
+        request: 'What is quantum computing?',
+        intent: 'action'
+    });
+    assert.equal(explicit.intent, 'action');
+    assert.equal(explicit.request, 'What is quantum computing?');
+    assert.deepEqual(explicit, {
+        ...EXPECTED_DEFAULTS,
+        request: 'What is quantum computing?',
+        intent: 'action'
+    });
+});
+
+test('Part 7B: intent is assigned only from the explicit input field, never the request', async () => {
+    const source = await readFile(new URL('../js/ai/interactionContext.js', import.meta.url), 'utf8');
+    const code = source
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+    // The single intent assignment normalizes ONLY the explicit caller
+    // input against the frozen enum with the documented default.
+    assert.match(code,
+        /intent:\s*normalizeEnum\(input\.intent,\s*INTERACTION_INTENTS,\s*INTERACTION_CONTEXT_DEFAULTS\.intent\)/);
+    // No code line mixes the request field with the intent field, so intent
+    // can never be derived from request text inside this module.
+    assert.doesNotMatch(code, /request[^;\n]*intent|intent[^;\n]*request/i);
+    // No intent-detection/inference helper is referenced anywhere.
+    assert.doesNotMatch(code, /\binferIntent\b|\bdetectIntent\b|\bclassifyIntent\b|INTENT_KEYWORDS/i);
+});
+
+test('Part 7B: explicit intent leaves Part 7A turnType behavior unchanged', () => {
+    // turnType is still caller-supplied and still normalized independently
+    // of the intent field.
+    assert.equal(createInteractionContext({ turnType: 'follow_up', intent: 'information' }).turnType, 'follow_up');
+    assert.equal(createInteractionContext({ turnType: 'new', intent: 'action' }).turnType, 'new');
+    assert.equal(createInteractionContext({ turnType: 'continuation', intent: 'information' }).turnType, 'new');
+    assert.equal(createInteractionContext({ intent: 'information' }).turnType, 'new');
+});
+
+test('Part 7B: explicit intent leaves source behavior unchanged', () => {
+    assert.equal(createInteractionContext({ source: 'voice', intent: 'conversation' }).source, 'voice');
+    assert.equal(createInteractionContext({ source: 'text', intent: 'action' }).source, 'text');
+    assert.equal(createInteractionContext({ source: 'email', intent: 'conversation' }).source, 'text');
+    assert.equal(createInteractionContext({ intent: 'conversation' }).source, 'text');
+});
+
+test('Part 7B: explicit intent leaves responseDepth, mode, and emotionalSignal behavior unchanged', () => {
+    const explicit = createInteractionContext({
+        intent: 'clarification',
+        responseDepth: 'deep',
+        mode: 'guardian',
+        emotionalSignal: 'confused'
+    });
+    assert.equal(explicit.responseDepth, 'deep');
+    assert.equal(explicit.mode, 'guardian');
+    assert.equal(explicit.emotionalSignal, 'confused');
+
+    // Invalid values still fall back to their documented defaults.
+    const invalid = createInteractionContext({
+        intent: 'clarification',
+        responseDepth: 'huge',
+        mode: 'wizard',
+        emotionalSignal: 'furious'
+    });
+    assert.equal(invalid.responseDepth, 'quick');
+    assert.equal(invalid.mode, null);
+    assert.equal(invalid.emotionalSignal, 'neutral');
+});
+
 test('accepts valid response-depth values unchanged', () => {
     assert.deepEqual(INTERACTION_RESPONSE_DEPTHS, ['quick', 'explain', 'deep']);
     expectAllAccepted('responseDepth', INTERACTION_RESPONSE_DEPTHS);
@@ -209,6 +350,12 @@ test('requires no network access', () => {
         const ctx = createInteractionContext({ request: 'ping' });
         assert.equal(ctx.request, 'ping');
         assert.equal(ctx.source, 'text');
+        // Part 7B: receiving an explicit intent requires no network either,
+        // and request text alone still yields no inferred intent.
+        for (const intent of INTERACTION_INTENTS) {
+            assert.equal(createInteractionContext({ intent }).intent, intent);
+        }
+        assert.equal(createInteractionContext({ request: 'What is quantum computing?' }).intent, 'unknown');
     } finally {
         globalThis.fetch = originalFetch;
         globalThis.WebSocket = originalWebSocket;
