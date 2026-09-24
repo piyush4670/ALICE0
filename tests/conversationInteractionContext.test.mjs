@@ -1,15 +1,16 @@
-// Part 6: ConversationManager → Interaction Context source plumbing.
+// Part 6 + 7A: ConversationManager → Interaction Context source plumbing + deterministic turn lifecycle
 // Run: node tests/conversationInteractionContext.test.mjs
 //
 // Focused ConversationManager tests only. The singleton AIBrain.processRequest
 // is stubbed so the HTTP adapter never runs — zero network access, verified
 // with a fetch spy. ConversationManager must create the context with
 // createInteractionContext() using fixed safe values plus an explicitly supplied
-// source, then forward that object. It must not detect intent, emotion, turn type, or source, and it
-// must not select a mode or response depth.
+// source, then forward that object. It must not detect intent, emotion, or source,
+// and it must not select a mode or response depth.
+// Part 7A adds deterministic turn lifecycle: first command => new, subsequent => follow_up.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { afterEach, describe, test } from 'node:test';
+import { afterEach, beforeEach, describe, test } from 'node:test';
 
 // Browser globals must exist before app modules are imported.
 globalThis.localStorage = {
@@ -20,11 +21,7 @@ globalThis.localStorage = {
 };
 globalThis.window = {
     speechSynthesis: {
-        cancel() {},
-        pause() {},
-        resume() {},
-        speak() {},
-        getVoices() { return []; }
+        cancel() {}, pause() {}, resume() {}, speak() {}, getVoices() { return []; }
     },
     open() {},
     SpeechRecognition: undefined,
@@ -33,9 +30,7 @@ globalThis.window = {
     webkitAudioContext: undefined
 };
 globalThis.speechSynthesis = globalThis.window.speechSynthesis;
-globalThis.SpeechSynthesisUtterance = class {
-    constructor(text) { this.text = text; }
-};
+globalThis.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } };
 Object.defineProperty(globalThis, 'navigator', {
     value: { mediaDevices: undefined, permissions: undefined },
     configurable: true
@@ -43,12 +38,9 @@ Object.defineProperty(globalThis, 'navigator', {
 globalThis.document = {
     createElement() {
         return {
-            style: {},
-            setAttribute() {},
-            click() {},
+            style: {}, setAttribute() {}, click() {},
             classList: { add() {}, remove() {} },
-            appendChild() {},
-            querySelector() { return null; },
+            appendChild() {}, querySelector() { return null; },
             getContext() { return null; }
         };
     },
@@ -59,8 +51,6 @@ globalThis.document = {
     addEventListener() {}
 };
 globalThis.Blob = class { constructor() {} };
-// Preserve the native URL constructor (needed for new URL(...)/import.meta.url)
-// while providing the blob helpers some modules use for exports.
 const NativeURL = globalThis.URL;
 globalThis.URL = class URL extends NativeURL {
     static createObjectURL() { return 'blob:test'; }
@@ -69,8 +59,6 @@ globalThis.URL = class URL extends NativeURL {
 globalThis.requestAnimationFrame = () => 1;
 globalThis.cancelAnimationFrame = () => {};
 
-// The memory module starts a reminder timer on import. Unref it so this
-// focused Node test process can exit. No test depends on that timer.
 const nativeSetInterval = globalThis.setInterval;
 globalThis.setInterval = (...args) => {
     const handle = nativeSetInterval(...args);
@@ -78,8 +66,6 @@ globalThis.setInterval = (...args) => {
     return handle;
 };
 
-// Fail closed: any unexpected network call is a test failure, not a
-// silent hit on the local gateway.
 let fetchCalls = 0;
 globalThis.fetch = async (...args) => {
     fetchCalls += 1;
@@ -98,60 +84,42 @@ const { CONFIG } = await import('../js/config.js');
 
 globalThis.setInterval = nativeSetInterval;
 
-// Fixed Part 6 context fields. Only `source` varies, and it is supplied by
-// the command entry path. Normalization (including the factory's `request`
-// default) belongs only to createInteractionContext().
-const FIXED_CONTEXT_FIELDS = Object.freeze({
-    turnType: 'new',
+// Fixed fields except turnType which is now deterministic lifecycle
+const FIXED_FIELDS_WITHOUT_TURN = Object.freeze({
     intent: 'unknown',
     responseDepth: 'quick',
     mode: null,
     emotionalSignal: 'neutral'
 });
 
-function contextInput(source = 'text') {
-    return { ...FIXED_CONTEXT_FIELDS, source };
+function contextInput(source = 'text', turnType = 'new') {
+    return { turnType, ...FIXED_FIELDS_WITHOUT_TURN, source };
 }
 
-function part6Context(source = 'text') {
-    return createInteractionContext(contextInput(source));
+function part6Context(source = 'text', turnType = 'new') {
+    return createInteractionContext(contextInput(source, turnType));
 }
 
-/**
- * The object AIBrain received must be the factory output for the fixed Part 6
- * values plus the explicitly supplied source — not a hand-built lookalike or
- * a detection result.
- */
-function assertPart6Context(received, expectedSource = 'text', label = 'interactionContext') {
+function assertPart6Context(received, expectedSource = 'text', expectedTurnType = 'new', label = 'interactionContext') {
     assert.ok(received && typeof received === 'object', `${label} must be an object`);
     assert.equal(Object.isFrozen(received), true, `${label} must be the frozen factory object`);
     assert.deepEqual(
         received,
-        part6Context(expectedSource),
-        `${label} must equal createInteractionContext(Part 6 values)`
+        part6Context(expectedSource, expectedTurnType),
+        `${label} must equal createInteractionContext(Part 6/7A values)`
     );
 
-    // Documented fields, exactly. `request` is the factory default (''):
-    // ConversationManager does not copy the user text into this field and
-    // does not construct the normalized object itself.
     const { request, ...documented } = received;
-    assert.deepEqual(documented, contextInput(expectedSource));
+    assert.deepEqual(documented, contextInput(expectedSource, expectedTurnType));
     assert.equal(request, '');
     assert.deepEqual(Object.keys(received).sort(), [
-        'emotionalSignal',
-        'intent',
-        'mode',
-        'request',
-        'responseDepth',
-        'source',
-        'turnType'
+        'emotionalSignal', 'intent', 'mode', 'request', 'responseDepth', 'source', 'turnType'
     ]);
 
     const intentDesc = Object.getOwnPropertyDescriptor(received, 'intent');
     assert.equal(intentDesc.writable, false);
     assert.equal(intentDesc.configurable, false);
 
-    // Metadata only — no privilege, credential, or execution fields.
     for (const forbidden of [
         'grantPermissions', 'permissions', 'credentials', 'bypassPlanValidator',
         'bypassPermissionGateway', 'tools', 'code', 'apiKey'
@@ -160,16 +128,15 @@ function assertPart6Context(received, expectedSource = 'text', label = 'interact
     }
 }
 
-function assertForwardedCall(call, expectedText, expectedSource = 'text') {
+function assertForwardedCall(call, expectedText, expectedSource = 'text', expectedTurnType = 'new') {
     assert.equal(call.text, expectedText);
     assert.deepEqual(
         Object.keys(call.options),
         ['interactionContext'],
         'ConversationManager must forward only interactionContext'
     );
-    assertPart6Context(call.options.interactionContext, expectedSource);
-    // The documented shape the AI Brain boundary receives.
-    assert.equal(call.options.interactionContext.turnType, 'new');
+    assertPart6Context(call.options.interactionContext, expectedSource, expectedTurnType);
+    assert.equal(call.options.interactionContext.turnType, expectedTurnType);
     assert.equal(call.options.interactionContext.intent, 'unknown');
     assert.equal(call.options.interactionContext.responseDepth, 'quick');
     assert.equal(call.options.interactionContext.mode, null);
@@ -177,11 +144,6 @@ function assertForwardedCall(call, expectedText, expectedSource = 'text') {
     assert.equal(call.options.interactionContext.source, expectedSource);
 }
 
-/**
- * Replace the singleton AIBrain entry point. ConversationManager holds the
- * same object, so this stub is what the runtime path calls — the HTTP
- * adapter (and the network) never run.
- */
 function stubProcessRequest(handler) {
     const original = aiBrain.processRequest;
     const calls = [];
@@ -198,9 +160,7 @@ function stubProcessRequest(handler) {
     return {
         calls,
         completed,
-        restore() {
-            aiBrain.processRequest = original;
-        }
+        restore() { aiBrain.processRequest = original; }
     };
 }
 
@@ -218,12 +178,16 @@ function directResponse(text) {
 }
 
 describe('ConversationManager interaction context', { concurrency: 1 }, () => {
+    beforeEach(() => {
+        conversation.clearHistory();
+    });
+
     afterEach(() => {
         assert.equal(fetchCalls, 0, 'Part 6 tests must not perform network access');
         assert.equal(aiBrain.isEnabled(), true, 'a test left AI Brain disabled');
     });
 
-    test('processText("Explain photosynthesis") forwards source: "text" with the fixed interaction context', async () => {
+    test('processText(\"Explain photosynthesis\") forwards source: \"text\" with the fixed interaction context', async () => {
         const answer = 'Photosynthesis is how plants make food from light.';
         const previousSpeak = conversation._onAliceSpeak;
         let resolveSpoken;
@@ -235,18 +199,16 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
 
         try {
             await withStub(async () => directResponse(answer), async (stub) => {
-                // processText does not return the pipeline promise.
                 conversation.processText('Explain photosynthesis');
                 await stub.completed;
                 assert.equal(await spoken, answer);
 
                 assert.equal(stub.calls.length, 1);
-                assertForwardedCall(stub.calls[0], 'Explain photosynthesis');
+                assertForwardedCall(stub.calls[0], 'Explain photosynthesis', 'text', 'new');
                 assert.deepEqual(stub.calls[0].options, {
-                    interactionContext: part6Context('text')
+                    interactionContext: part6Context('text', 'new')
                 });
 
-                // Existing direct-response handling still records the reply.
                 assert.equal(state.get('voice.lastAliceResponse'), answer);
                 const history = state.getConversation();
                 assert.equal(history.at(-2).role, 'user');
@@ -259,7 +221,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
         }
     });
 
-    test('a final voice result forwards source: "voice"', async () => {
+    test('a final voice result forwards source: \"voice\"', async () => {
         await withStub(async () => directResponse('From the voice path.'), async (stub) => {
             conversation._confirmationActive = false;
             conversation._listenToken = conversation._generation;
@@ -271,7 +233,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             await stub.completed;
 
             assert.equal(stub.calls.length, 1);
-            assertForwardedCall(stub.calls[0], 'Explain photosynthesis', 'voice');
+            assertForwardedCall(stub.calls[0], 'Explain photosynthesis', 'voice', 'new');
             assert.equal(stub.calls[0].options.interactionContext.source, 'voice');
             assert.equal(stub.calls[0].options.interactionContext.turnType, 'new');
         });
@@ -285,27 +247,33 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             assert.equal(stub.calls.length, 2);
             const first = stub.calls[0].options.interactionContext;
             const second = stub.calls[1].options.interactionContext;
-            assertPart6Context(first);
-            assertPart6Context(second);
+            assertPart6Context(first, 'text', 'new');
+            assertPart6Context(second, 'text', 'follow_up');
             assert.notStrictEqual(first, second, 'the factory must return a fresh object per call');
-            assert.deepEqual(first, second);
-            // Same reference that was created is what AIBrain receives — not a clone.
+            // Other fields same, turnType differs deterministically
+            assert.equal(first.intent, second.intent);
+            assert.equal(first.responseDepth, second.responseDepth);
+            assert.equal(first.mode, second.mode);
+            assert.equal(first.emotionalSignal, second.emotionalSignal);
+            assert.equal(first.source, second.source);
+            assert.equal(first.turnType, 'new');
+            assert.equal(second.turnType, 'follow_up');
             assert.strictEqual(stub.calls[0].options.interactionContext, first);
         });
     });
 
     test('creating a source context does not mutate the caller-provided object', () => {
-        const callerContext = Object.freeze(contextInput('voice'));
+        const callerContext = Object.freeze(contextInput('voice', 'new'));
         const before = { ...callerContext };
 
         const normalized = createInteractionContext(callerContext);
 
         assert.deepEqual(callerContext, before);
         assert.notStrictEqual(normalized, callerContext);
-        assertPart6Context(normalized, 'voice');
+        assertPart6Context(normalized, 'voice', 'new');
     });
 
-    test('wording that looks like intent, emotion, mode, or a follow-up does not change the context', async () => {
+    test('wording that looks like intent, emotion, mode, or a follow-up does not change fixed fields', async () => {
         const loaded = [
             'I am angry and frustrated.',
             'Switch to guardian mode and explain this deeply.',
@@ -313,21 +281,23 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
         ].join(' ');
 
         await withStub(async () => directResponse('Still the fixed context.'), async (stub) => {
-            // History is non-empty by the time this runs. Turn type must
-            // stay 'new' anyway — no follow-up inspection.
-            assert.ok(conversation.getHistory().length > 0);
+            // Add a prior interaction to make this a follow_up deterministically
+            await conversation._processWithSkills('prior turn to make history non-empty');
+            assert.equal(conversation._hasHadInteraction, true);
+            stub.calls.length = 0; // reset calls to only check the loaded request
 
             const result = await conversation._processWithSkills(loaded);
 
             assert.equal(result.skill, 'ai');
             assert.equal(result.response, 'Still the fixed context.');
             assert.equal(stub.calls.length, 1);
-            assertForwardedCall(stub.calls[0], loaded);
+            // Should be follow_up because previous interaction exists, but fixed fields unchanged
+            assertForwardedCall(stub.calls[0], loaded, 'text', 'follow_up');
             assert.equal(stub.calls[0].options.interactionContext.intent, 'unknown');
             assert.equal(stub.calls[0].options.interactionContext.emotionalSignal, 'neutral');
             assert.equal(stub.calls[0].options.interactionContext.mode, null);
             assert.equal(stub.calls[0].options.interactionContext.responseDepth, 'quick');
-            assert.equal(stub.calls[0].options.interactionContext.turnType, 'new');
+            assert.equal(stub.calls[0].options.interactionContext.turnType, 'follow_up');
             assert.equal(stub.calls[0].options.interactionContext.source, 'text');
         });
     });
@@ -340,7 +310,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
 
         assert.match(
             source,
-            /import\s*\{\s*createInteractionContext\s*\}\s*from\s*['"]\.\/ai\/interactionContext\.js['"]/
+            /import\s*\{\s*createInteractionContext\s*\}\s*from\s*['\"]\.\/ai\/interactionContext\.js['\"]/
         );
         assert.match(code, /async\s+_processCommand\(text, source = 'text'\)/);
         assert.match(code, /this\._processCommand\(text\.trim\(\), 'text'\)/);
@@ -362,30 +332,26 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             /aiBrain\.processRequest\(\s*text\s*,\s*\{\s*interactionContext\s*\}\s*\)/
         );
 
-        const call = source.match(/createInteractionContext\(\s*\{([\s\S]*?)\}\s*\)/);
-        assert.ok(call, 'createInteractionContext() must be called with an object');
-        const assignments = [...call[1].matchAll(/([A-Za-z]+)\s*:\s*([^,\n]+)/g)]
-            .map((match) => [match[1], match[2].trim()]);
-        assert.deepEqual(assignments, [
-            ['turnType', "'new'"],
-            ['intent', "'unknown'"],
-            ['responseDepth', "'quick'"],
-            ['mode', 'null'],
-            ['emotionalSignal', "'neutral'"]
-        ]);
-        assert.match(call[1], /(?:^|\n)\s*source\s*(?:\n|$)/,
-            'the context source must be the explicitly supplied source parameter');
+        // Part 7A: turnType is deterministic via _hasHadInteraction, not hardcoded
+        assert.match(code, /_hasHadInteraction/);
+        assert.match(code, /turnType/);
+        assert.match(code, /'follow_up'/);
+        // Must still have fixed fields
+        assert.match(code, /intent:\s*'unknown'/);
+        assert.match(code, /responseDepth:\s*'quick'/);
+        assert.match(code, /mode:\s*null/);
+        assert.match(code, /emotionalSignal:\s*'neutral'/);
+        assert.match(code, /source/);
 
-        // No second normalization path, source inference, or selection logic.
-        assert.doesNotMatch(source, /INTERACTION_(?:TURN_TYPES|INTENTS|RESPONSE_DEPTHS|MODES|EMOTIONAL_SIGNALS|SOURCES|CONTEXT_DEFAULTS)/);
+        // No inference logic
+        assert.doesNotMatch(source, /INTERACTION_(?:INTENTS|RESPONSE_DEPTHS|MODES|EMOTIONAL_SIGNALS|SOURCES|CONTEXT_DEFAULTS)/);
         assert.doesNotMatch(source, /normalizeEnum|normalizeRequest|normalizeMode/);
-        assert.doesNotMatch(source, /detectIntent|detectEmotion|detectTurn|detectSource|classifyIntent|classifySource|sentiment|selectMode|selectDepth|inferTurn|inferSource|personalityMode/);
-        assert.doesNotMatch(source, /turnType:\s*'follow_up'/);
-        assert.doesNotMatch(source, /from\s*['"]\.\/ai\/planValidator\.js['"]/);
-        assert.doesNotMatch(source, /from\s*['"]\.\/ai\/httpModelAdapter\.js['"]/);
+        assert.doesNotMatch(source, /detectIntent|detectEmotion|detectSource|classifyIntent|classifySource|sentiment|selectMode|selectDepth|inferSource|personalityMode/);
+        // The old Part 6 check for absence of follow_up is now obsolete; Part 7A introduces follow_up deterministically
+        assert.doesNotMatch(source, /from\s*['\"]\.\/ai\/planValidator\.js['\"]/);
+        assert.doesNotMatch(source, /from\s*['\"]\.\/ai\/httpModelAdapter\.js['\"]/);
         assert.doesNotMatch(source, /gateway\.js/);
 
-        // Plumbing did not retarget the security pipeline or the gateway.
         assert.equal(CONFIG.ai.enabled, true);
         assert.equal(CONFIG.ai.adapter, 'http');
         assert.equal(CONFIG.ai.gateway.url, 'http://127.0.0.1:3001');
@@ -420,7 +386,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
                     const result = await conversation._processWithSkills('Explain photosynthesis');
 
                     assert.equal(stub.calls.length, 1);
-                    assertForwardedCall(stub.calls[0], 'Explain photosynthesis');
+                    assertForwardedCall(stub.calls[0], 'Explain photosynthesis', 'text', 'new');
                     assert.deepEqual(result, {
                         response: 'Photosynthesis is how plants make food from light.',
                         skill: 'ai'
@@ -462,12 +428,11 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
                 const result = await conversation._processWithSkills('Calculate 2 plus 2');
 
                 assert.equal(stub.calls.length, 1);
-                assertForwardedCall(stub.calls[0], 'Calculate 2 plus 2');
+                assertForwardedCall(stub.calls[0], 'Calculate 2 plus 2', 'text', 'new');
                 assert.equal(result.skill, 'agent');
                 assert.match(result.response, /4/);
                 assert.equal(state.get('aliceState'), CONFIG.states.COMPLETING);
                 assert.equal(state.getTask().status, 'completed');
-                // The plan still crossed the existing permission boundary.
                 assert.ok(gateCalls >= 1, 'Permission Gateway must still run');
                 assert.equal(fetchCalls, 0);
             });
@@ -495,7 +460,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
                 const result = await conversation._processWithSkills('calculate 2 plus 2');
 
                 assert.equal(stub.calls.length, 1);
-                assertForwardedCall(stub.calls[0], 'calculate 2 plus 2');
+                assertForwardedCall(stub.calls[0], 'calculate 2 plus 2', 'text', 'new');
                 assert.equal(agentProcessCalls, 1, 'deterministic agent fallback must still be consulted');
                 assert.equal(result.skill, 'calculator');
                 assert.match(result.response, /4/);
@@ -512,7 +477,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             const result = await conversation._processWithSkills('calculate 25 percent of 800');
 
             assert.equal(stub.calls.length, 1);
-            assertForwardedCall(stub.calls[0], 'calculate 25 percent of 800');
+            assertForwardedCall(stub.calls[0], 'calculate 25 percent of 800', 'text', 'new');
             assert.equal(result.skill, 'calculator');
             assert.match(result.response, /200/);
             assert.ok(
@@ -539,13 +504,11 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
     });
 
     test('an unmatched request still reaches the basic fallback when AI declines', async () => {
-        // A greeting matches no skill, so the pre-existing basic responder
-        // is the deterministic end of the pipeline.
         await withStub(async () => ({ success: false, fallback: true }), async (stub) => {
             const result = await conversation._processWithSkills('Hello there friend');
 
             assert.equal(stub.calls.length, 1);
-            assertForwardedCall(stub.calls[0], 'Hello there friend');
+            assertForwardedCall(stub.calls[0], 'Hello there friend', 'text', 'new');
             assert.equal(result.skill, 'basic');
             assert.match(result.response, /Hello/);
         });
@@ -567,7 +530,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
                 await conversation._processCommand('Explain photosynthesis');
 
                 assert.equal(stub.calls.length, 1);
-                assertForwardedCall(stub.calls[0], 'Explain photosynthesis');
+                assertForwardedCall(stub.calls[0], 'Explain photosynthesis', 'text', 'new');
                 assert.equal(state.get('voice.lastAliceResponse'), 'Still recorded, not spoken.');
                 assert.deepEqual(spoken, [], 'a stale generation token must not speak');
                 assert.ok(
@@ -594,7 +557,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             conversation.processText('Explain photosynthesis');
             await stub.completed;
             assert.equal(stub.calls.length, 1);
-            assertPart6Context(stub.calls[0].options.interactionContext);
+            assertPart6Context(stub.calls[0].options.interactionContext, 'text', 'new');
         });
         assert.equal(fetchCalls, 0);
     });

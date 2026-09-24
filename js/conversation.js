@@ -58,6 +58,11 @@ class ConversationManager {
         // Confirmation listening (Part 4)
         this._confirmationActive = false;
 
+        // Part 7A: minimal deterministic turn lifecycle
+        // Whether a previous completed user/ALICE interaction exists.
+        // First command => 'new', subsequent => 'follow_up'. Reset by clearHistory().
+        this._hasHadInteraction = false;
+
         this._setupCallbacks();
         this._setupPermissionCallbacks();
     }
@@ -620,12 +625,15 @@ class ConversationManager {
         // the Plan Validator before reaching the Agent.
         if (CONFIG.ai?.enabled && aiBrain.isEnabled()) {
             try {
-                // Part 6: runtime plumbing only. Source is explicitly
-                // supplied by the command entry path; the remaining values are
-                // fixed caller input, never inferred from request or history.
+                // Part 7A: deterministic turn lifecycle — first command is 'new',
+                // subsequent commands in the same conversation are 'follow_up'.
+                // Source is explicitly supplied by the command entry path; the
+                // remaining values are fixed caller input, never inferred.
                 // The factory below is the single normalization boundary.
+                const turnType = this._hasHadInteraction ? 'follow_up' : 'new';
+                this._hasHadInteraction = true;
                 const interactionContext = createInteractionContext({
-                    turnType: 'new',
+                    turnType,
                     intent: 'unknown',
                     responseDepth: 'quick',
                     mode: null,
@@ -847,6 +855,7 @@ class ConversationManager {
      */
     clearHistory() {
         this._conversationHistory = [];
+        this._hasHadInteraction = false;
         state.logActivity('Conversation history cleared', 'info');
     }
 
