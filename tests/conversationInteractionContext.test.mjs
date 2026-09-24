@@ -1,11 +1,11 @@
-// Part 5: ConversationManager → Interaction Context plumbing.
+// Part 6: ConversationManager → Interaction Context source plumbing.
 // Run: node tests/conversationInteractionContext.test.mjs
 //
 // Focused ConversationManager tests only. The singleton AIBrain.processRequest
 // is stubbed so the HTTP adapter never runs — zero network access, verified
 // with a fetch spy. ConversationManager must create the context with
-// createInteractionContext() using the fixed Part 5 values and forward that
-// object. It must not detect intent, emotion, turn type, or source, and it
+// createInteractionContext() using fixed safe values plus an explicitly supplied
+// source, then forward that object. It must not detect intent, emotion, turn type, or source, and it
 // must not select a mode or response depth.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -98,48 +98,44 @@ const { CONFIG } = await import('../js/config.js');
 
 globalThis.setInterval = nativeSetInterval;
 
-// Fixed Part 5 caller input. Normalization (including the factory's
-// `request` default) belongs only to createInteractionContext().
-const PART5_INPUT = Object.freeze({
+// Fixed Part 6 context fields. Only `source` varies, and it is supplied by
+// the command entry path. Normalization (including the factory's `request`
+// default) belongs only to createInteractionContext().
+const FIXED_CONTEXT_FIELDS = Object.freeze({
     turnType: 'new',
     intent: 'unknown',
     responseDepth: 'quick',
     mode: null,
-    emotionalSignal: 'neutral',
-    source: 'text'
+    emotionalSignal: 'neutral'
 });
 
-const DOCUMENTED_PART5_CONTEXT = Object.freeze({
-    turnType: 'new',
-    intent: 'unknown',
-    responseDepth: 'quick',
-    mode: null,
-    emotionalSignal: 'neutral',
-    source: 'text'
-});
+function contextInput(source = 'text') {
+    return { ...FIXED_CONTEXT_FIELDS, source };
+}
 
-function part5Context() {
-    return createInteractionContext({ ...PART5_INPUT });
+function part6Context(source = 'text') {
+    return createInteractionContext(contextInput(source));
 }
 
 /**
- * The object AIBrain received must be the factory output for the fixed
- * Part 5 values — not a hand-built lookalike, and not a detection result.
+ * The object AIBrain received must be the factory output for the fixed Part 6
+ * values plus the explicitly supplied source — not a hand-built lookalike or
+ * a detection result.
  */
-function assertPart5Context(received, label = 'interactionContext') {
+function assertPart6Context(received, expectedSource = 'text', label = 'interactionContext') {
     assert.ok(received && typeof received === 'object', `${label} must be an object`);
     assert.equal(Object.isFrozen(received), true, `${label} must be the frozen factory object`);
     assert.deepEqual(
         received,
-        part5Context(),
-        `${label} must equal createInteractionContext(Part 5 values)`
+        part6Context(expectedSource),
+        `${label} must equal createInteractionContext(Part 6 values)`
     );
 
-    // Documented Part 5 fields, exactly. `request` is the factory default
-    // (''): ConversationManager does not copy the user text into this field
-    // and does not construct the normalized object itself.
+    // Documented fields, exactly. `request` is the factory default (''):
+    // ConversationManager does not copy the user text into this field and
+    // does not construct the normalized object itself.
     const { request, ...documented } = received;
-    assert.deepEqual(documented, DOCUMENTED_PART5_CONTEXT);
+    assert.deepEqual(documented, contextInput(expectedSource));
     assert.equal(request, '');
     assert.deepEqual(Object.keys(received).sort(), [
         'emotionalSignal',
@@ -164,21 +160,21 @@ function assertPart5Context(received, label = 'interactionContext') {
     }
 }
 
-function assertForwardedCall(call, expectedText) {
+function assertForwardedCall(call, expectedText, expectedSource = 'text') {
     assert.equal(call.text, expectedText);
     assert.deepEqual(
         Object.keys(call.options),
         ['interactionContext'],
         'ConversationManager must forward only interactionContext'
     );
-    assertPart5Context(call.options.interactionContext);
+    assertPart6Context(call.options.interactionContext, expectedSource);
     // The documented shape the AI Brain boundary receives.
-    assert.deepEqual(call.options.interactionContext.turnType, 'new');
-    assert.deepEqual(call.options.interactionContext.intent, 'unknown');
-    assert.deepEqual(call.options.interactionContext.responseDepth, 'quick');
+    assert.equal(call.options.interactionContext.turnType, 'new');
+    assert.equal(call.options.interactionContext.intent, 'unknown');
+    assert.equal(call.options.interactionContext.responseDepth, 'quick');
     assert.equal(call.options.interactionContext.mode, null);
     assert.equal(call.options.interactionContext.emotionalSignal, 'neutral');
-    assert.equal(call.options.interactionContext.source, 'text');
+    assert.equal(call.options.interactionContext.source, expectedSource);
 }
 
 /**
@@ -223,11 +219,11 @@ function directResponse(text) {
 
 describe('ConversationManager interaction context', { concurrency: 1 }, () => {
     afterEach(() => {
-        assert.equal(fetchCalls, 0, 'Part 5 tests must not perform network access');
+        assert.equal(fetchCalls, 0, 'Part 6 tests must not perform network access');
         assert.equal(aiBrain.isEnabled(), true, 'a test left AI Brain disabled');
     });
 
-    test('processText("Explain photosynthesis") forwards the Part 5 interaction context', async () => {
+    test('processText("Explain photosynthesis") forwards source: "text" with the fixed interaction context', async () => {
         const answer = 'Photosynthesis is how plants make food from light.';
         const previousSpeak = conversation._onAliceSpeak;
         let resolveSpoken;
@@ -247,7 +243,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
                 assert.equal(stub.calls.length, 1);
                 assertForwardedCall(stub.calls[0], 'Explain photosynthesis');
                 assert.deepEqual(stub.calls[0].options, {
-                    interactionContext: part5Context()
+                    interactionContext: part6Context('text')
                 });
 
                 // Existing direct-response handling still records the reply.
@@ -263,7 +259,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
         }
     });
 
-    test('a voice-driven request still forwards source: "text"', async () => {
+    test('a final voice result forwards source: "voice"', async () => {
         await withStub(async () => directResponse('From the voice path.'), async (stub) => {
             conversation._confirmationActive = false;
             conversation._listenToken = conversation._generation;
@@ -275,8 +271,8 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             await stub.completed;
 
             assert.equal(stub.calls.length, 1);
-            assertForwardedCall(stub.calls[0], 'Explain photosynthesis');
-            assert.equal(stub.calls[0].options.interactionContext.source, 'text');
+            assertForwardedCall(stub.calls[0], 'Explain photosynthesis', 'voice');
+            assert.equal(stub.calls[0].options.interactionContext.source, 'voice');
             assert.equal(stub.calls[0].options.interactionContext.turnType, 'new');
         });
     });
@@ -289,13 +285,24 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             assert.equal(stub.calls.length, 2);
             const first = stub.calls[0].options.interactionContext;
             const second = stub.calls[1].options.interactionContext;
-            assertPart5Context(first);
-            assertPart5Context(second);
+            assertPart6Context(first);
+            assertPart6Context(second);
             assert.notStrictEqual(first, second, 'the factory must return a fresh object per call');
             assert.deepEqual(first, second);
             // Same reference that was created is what AIBrain receives — not a clone.
             assert.strictEqual(stub.calls[0].options.interactionContext, first);
         });
+    });
+
+    test('creating a source context does not mutate the caller-provided object', () => {
+        const callerContext = Object.freeze(contextInput('voice'));
+        const before = { ...callerContext };
+
+        const normalized = createInteractionContext(callerContext);
+
+        assert.deepEqual(callerContext, before);
+        assert.notStrictEqual(normalized, callerContext);
+        assertPart6Context(normalized, 'voice');
     });
 
     test('wording that looks like intent, emotion, mode, or a follow-up does not change the context', async () => {
@@ -325,7 +332,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
         });
     });
 
-    test('source calls createInteractionContext with fixed literals and does not detect', async () => {
+    test('source is explicitly passed from text and voice entry paths without inference', async () => {
         const source = await readFile(new URL('../js/conversation.js', import.meta.url), 'utf8');
         const code = source
             .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -335,6 +342,11 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             source,
             /import\s*\{\s*createInteractionContext\s*\}\s*from\s*['"]\.\/ai\/interactionContext\.js['"]/
         );
+        assert.match(code, /async\s+_processCommand\(text, source = 'text'\)/);
+        assert.match(code, /this\._processCommand\(text\.trim\(\), 'text'\)/);
+        assert.match(code, /this\._processCommand\(result\.final, 'voice'\)/);
+        assert.match(code, /this\._processWithSkills\(text, token, source\)/);
+        assert.match(code, /async\s+_processWithSkills\(text, token = null, source = 'text'\)/);
         assert.equal(
             code.match(/createInteractionContext\s*\(/g).length,
             1,
@@ -359,15 +371,15 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             ['intent', "'unknown'"],
             ['responseDepth', "'quick'"],
             ['mode', 'null'],
-            ['emotionalSignal', "'neutral'"],
-            ['source', "'text'"]
+            ['emotionalSignal', "'neutral'"]
         ]);
+        assert.match(call[1], /(?:^|\n)\s*source\s*(?:\n|$)/,
+            'the context source must be the explicitly supplied source parameter');
 
-        // No second normalization path, and no detection / selection logic.
+        // No second normalization path, source inference, or selection logic.
         assert.doesNotMatch(source, /INTERACTION_(?:TURN_TYPES|INTENTS|RESPONSE_DEPTHS|MODES|EMOTIONAL_SIGNALS|SOURCES|CONTEXT_DEFAULTS)/);
         assert.doesNotMatch(source, /normalizeEnum|normalizeRequest|normalizeMode/);
-        assert.doesNotMatch(source, /detectIntent|detectEmotion|detectTurn|classifyIntent|sentiment|selectMode|selectDepth|inferTurn|personalityMode/);
-        assert.doesNotMatch(source, /source:\s*'voice'/);
+        assert.doesNotMatch(source, /detectIntent|detectEmotion|detectTurn|detectSource|classifyIntent|classifySource|sentiment|selectMode|selectDepth|inferTurn|inferSource|personalityMode/);
         assert.doesNotMatch(source, /turnType:\s*'follow_up'/);
         assert.doesNotMatch(source, /from\s*['"]\.\/ai\/planValidator\.js['"]/);
         assert.doesNotMatch(source, /from\s*['"]\.\/ai\/httpModelAdapter\.js['"]/);
@@ -576,13 +588,13 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
         });
     });
 
-    test('the Part 5 plumbing introduces no network access', async () => {
+    test('the Part 6 plumbing introduces no network access', async () => {
         assert.equal(fetchCalls, 0);
         await withStub(async () => directResponse('offline'), async (stub) => {
             conversation.processText('Explain photosynthesis');
             await stub.completed;
             assert.equal(stub.calls.length, 1);
-            assertPart5Context(stub.calls[0].options.interactionContext);
+            assertPart6Context(stub.calls[0].options.interactionContext);
         });
         assert.equal(fetchCalls, 0);
     });

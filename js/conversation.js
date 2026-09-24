@@ -541,7 +541,7 @@ class ConversationManager {
                 this._handleConfirmationSpeech(result.final);
                 return;
             }
-            this._processCommand(result.final);
+            this._processCommand(result.final, 'voice');
         }
     }
 
@@ -559,9 +559,10 @@ class ConversationManager {
     }
 
     /**
-     * Process the recognized command
+     * Process a text or voice command. The entry path explicitly supplies
+     * its source; the default preserves compatibility for internal callers.
      */
-    async _processCommand(text) {
+    async _processCommand(text, source = 'text') {
         // A command arriving is an explicit interaction — clear "stopped".
         this._stopped = false;
         const token = this._generation;
@@ -584,7 +585,7 @@ class ConversationManager {
         this._setStatus(VOICE_STATUS.PROCESSING);
 
         // Process through skill system
-        const result = await this._processWithSkills(text, token);
+        const result = await this._processWithSkills(text, token, source);
 
         // Speak response (suppressed if Stop was pressed mid-processing)
         this._speakResponse(result.response, result.skill, token);
@@ -597,7 +598,7 @@ class ConversationManager {
      */
     processText(text) {
         if (!text || !text.trim()) return;
-        this._processCommand(text.trim());
+        this._processCommand(text.trim(), 'text');
     }
 
     /**
@@ -606,12 +607,12 @@ class ConversationManager {
      * while the pipeline was running. THE PIPELINE ITSELF IS UNCHANGED:
      * AI Brain → Plan Validator → Agent → Permission Gateway → Skills.
      *
-     * Part 5 only adds fixed Interaction Context metadata on the AI Brain
-     * call. It does not detect intent, emotion, turn type, or source, and
-     * it does not select a mode or response depth. Execution behaviour
-     * is unchanged.
+     * Part 6 supplies Interaction Context metadata on the AI Brain call.
+     * Source is explicitly passed by the command-entry path; all other
+     * values remain fixed. Nothing is inferred or selected, and execution
+     * behaviour is unchanged.
      */
-    async _processWithSkills(text, token = null) {
+    async _processWithSkills(text, token = null, source = 'text') {
         state.set('aliceState', CONFIG.states.UNDERSTANDING);
 
         // 1. AI Brain pipeline (Phase 6.2)
@@ -619,17 +620,17 @@ class ConversationManager {
         // the Plan Validator before reaching the Agent.
         if (CONFIG.ai?.enabled && aiBrain.isEnabled()) {
             try {
-                // Part 5: runtime plumbing only. These values are fixed caller
-                // input — not inferred from the request, history, or voice.
+                // Part 6: runtime plumbing only. Source is explicitly
+                // supplied by the command entry path; the remaining values are
+                // fixed caller input, never inferred from request or history.
                 // The factory below is the single normalization boundary.
-                // Voice-aware source handling is a later part.
                 const interactionContext = createInteractionContext({
                     turnType: 'new',
                     intent: 'unknown',
                     responseDepth: 'quick',
                     mode: null,
                     emotionalSignal: 'neutral',
-                    source: 'text'
+                    source
                 });
 
                 const aiResult = await aiBrain.processRequest(text, {
