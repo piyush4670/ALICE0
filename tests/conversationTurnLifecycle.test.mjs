@@ -6,7 +6,8 @@
 // - Subsequent => "follow_up"
 // - clearHistory() resets to "new"
 // - source preserved text/voice
-// - fixed fields unchanged
+// - remaining fixed fields unchanged (emotionalSignal; cue-free requests
+//   also keep the Part 7C/7D/7E detector defaults)
 // - no network access
 import assert from 'node:assert/strict';
 import { beforeEach, afterEach, describe, test } from 'node:test';
@@ -292,13 +293,17 @@ describe('ConversationManager deterministic turn lifecycle (Part 7A)', { concurr
 
     test('G2. createInteractionContext is used and request field stays default', async () => {
         await withStub(async () => directResponse('ok'), async (stub) => {
-            await conversation._processWithSkills('Explain photosynthesis', null, 'text');
+            // A cue-free request keeps this a lifecycle test, not a detector
+            // test: 'What is photosynthesis?' carries no explicit depth or
+            // mode cue, so the Part 7D/7E detectors yield quick/null.
+            await conversation._processWithSkills('What is photosynthesis?', null, 'text');
             const ctx = stub.calls[0].options.interactionContext;
             // request is factory default '' per existing contract
             assert.equal(ctx.request, '');
             // Must equal factory output for given turnType and source.
-            // Part 7C: intent now comes from the deterministic detector
-            // ('Explain photosynthesis' → information); all other fields fixed.
+            // Part 7C/7D/7E: intent, responseDepth and mode come from the
+            // deterministic detectors ('What is photosynthesis?' →
+            // information/quick/null); the remaining fields are fixed.
             const expected = createInteractionContext({
                 turnType: 'new',
                 intent: 'information',
@@ -309,6 +314,8 @@ describe('ConversationManager deterministic turn lifecycle (Part 7A)', { concurr
             });
             assert.deepEqual(ctx, expected);
             assert.equal(ctx.intent, 'information', 'detected intent is forwarded');
+            assert.equal(ctx.responseDepth, 'quick', 'no explicit depth cue keeps the quick default');
+            assert.equal(ctx.mode, null, 'no explicit mode cue keeps mode null');
         });
     });
 

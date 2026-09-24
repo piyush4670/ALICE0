@@ -6,8 +6,10 @@
 // fetch spy. Verifies that:
 //   - obvious requests receive the detected intent in InteractionContext
 //   - ambiguous requests still receive "unknown"
-//   - every other context field (turnType lifecycle, source, responseDepth,
-//     mode, emotionalSignal) is unchanged from Part 6/7A
+//   - the other context fields follow the current contract: turnType from
+//     the Part 7A lifecycle, source from the entry path, responseDepth from
+//     the Part 7D detector and mode from the Part 7E detector (both for the
+//     exact request text), emotionalSignal fixed at "neutral"
 //   - detection never executes a skill, the agent, or any permission gate
 //   - a detector failure falls back to unknown/low and never crashes
 import assert from 'node:assert/strict';
@@ -73,6 +75,8 @@ const { permissions } = await import('../js/permissions.js');
 const { skillManager } = await import('../js/skillManager.js');
 const { state } = await import('../js/state.js');
 const { detectIntent } = await import('../js/ai/intentDetector.js');
+const { detectResponseDepth } = await import('../js/ai/responseDepthDetector.js');
+const { detectPersonalityMode } = await import('../js/ai/personalityModeDetector.js');
 const { createInteractionContext } = await import('../js/ai/interactionContext.js');
 
 globalThis.setInterval = nativeSetInterval;
@@ -120,13 +124,19 @@ function assertContextShape(ctx, { text, intent, source = 'text', turnType = 'ne
     assert.equal(ctx.intent, intent, `intent for "${text}"`);
     assert.equal(ctx.turnType, turnType, 'turnType comes from the Part 7A lifecycle');
     assert.equal(ctx.source, source, 'source comes from the entry path');
-    assert.equal(ctx.responseDepth, 'quick', 'responseDepth remains quick');
-    assert.equal(ctx.mode, null, 'mode remains null');
+    // Part 7D/7E: responseDepth and mode are exactly the deterministic
+    // detectors' verdicts for this exact request text.
+    const expectedDepth = detectResponseDepth(text).depth;
+    const expectedMode = detectPersonalityMode(text).mode;
+    assert.equal(ctx.responseDepth, expectedDepth,
+        `responseDepth must equal detectResponseDepth(${JSON.stringify(text)}).depth`);
+    assert.equal(ctx.mode, expectedMode,
+        `mode must equal detectPersonalityMode(${JSON.stringify(text)}).mode`);
     assert.equal(ctx.emotionalSignal, 'neutral', 'emotionalSignal remains neutral');
     assert.equal(ctx.request, '', 'factory request normalization unchanged');
     // The context must equal the pure factory output for these values.
     assert.deepEqual(ctx, createInteractionContext({
-        turnType, intent, responseDepth: 'quick', mode: null,
+        turnType, intent, responseDepth: expectedDepth, mode: expectedMode,
         emotionalSignal: 'neutral', source
     }));
 }
@@ -149,6 +159,10 @@ describe('ConversationManager intent detection integration (Part 7C)', { concurr
             assertContextShape(stub.calls[0].options.interactionContext, {
                 text: 'What is photosynthesis?', intent: 'information', turnType: 'new'
             });
+            // Part 7D/7E: a plain question carries no explicit depth or mode
+            // cue, so it keeps the default depth and no mode.
+            assert.equal(stub.calls[0].options.interactionContext.responseDepth, 'quick');
+            assert.equal(stub.calls[0].options.interactionContext.mode, null);
         });
     });
 
@@ -203,6 +217,10 @@ describe('ConversationManager intent detection integration (Part 7C)', { concurr
             assertContextShape(stub.calls[0].options.interactionContext, {
                 text: 'Explain quantum computing', intent: 'information', turnType: 'new'
             });
+            // Part 7D: the explicit "explain" cue raises the depth without a
+            // mode cue; the other requests stay at the quick/no-mode default.
+            assert.equal(stub.calls[0].options.interactionContext.responseDepth, 'explain');
+            assert.equal(stub.calls[0].options.interactionContext.mode, null);
             assertContextShape(stub.calls[1].options.interactionContext, {
                 text: 'Open YouTube', intent: 'action', source: 'voice', turnType: 'follow_up'
             });
@@ -332,7 +350,7 @@ describe('ConversationManager intent detection integration (Part 7C)', { concurr
     });
 
     // --- Integration wiring is minimal and scoped ---------------------------
-    test('conversation.js wires exactly one detectIntent call into the context factory', async () => {
+    test('conversation.js wires exactly one detector call per detected field into the context factory', async () => {
         const source = await readFile(new URL('../js/conversation.js', import.meta.url), 'utf8');
         const code = source
             .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -345,6 +363,20 @@ describe('ConversationManager intent detection integration (Part 7C)', { concurr
             1,
             'there is exactly one detectIntent call'
         );
+        assert.match(source,
+            /import\s*\{\s*detectResponseDepth\s*\}\s*from\s*['"]\.\/ai\/responseDepthDetector\.js['"]/);
+        assert.equal(
+            code.match(/detectResponseDepth\s*\(/g).length,
+            1,
+            'there is exactly one detectResponseDepth call'
+        );
+        assert.match(source,
+            /import\s*\{\s*detectPersonalityMode\s*\}\s*from\s*['"]\.\/ai\/personalityModeDetector\.js['"]/);
+        assert.equal(
+            code.match(/detectPersonalityMode\s*\(/g).length,
+            1,
+            'there is exactly one detectPersonalityMode call'
+        );
         assert.equal(
             code.match(/createInteractionContext\s*\(/g).length,
             1,
@@ -352,10 +384,14 @@ describe('ConversationManager intent detection integration (Part 7C)', { concurr
         );
         assert.match(code, /intent:\s*detectIntent\(text\)\.intent/,
             'intent must come from detectIntent(text)');
-        // The hardcoded placeholder is gone; every other fixed field remains.
+        assert.match(code, /responseDepth:\s*detectResponseDepth\(text\)\.depth/,
+            'responseDepth must come from detectResponseDepth(text) (Part 7D)');
+        assert.match(code, /mode:\s*detectPersonalityMode\(text\)\.mode/,
+            'mode must come from detectPersonalityMode(text) (Part 7E)');
+        // The hardcoded placeholders are gone; the fixed safe default remains.
         assert.doesNotMatch(code, /intent:\s*'unknown'/);
-        assert.match(code, /responseDepth:\s*'quick'/);
-        assert.match(code, /mode:\s*null/);
+        assert.doesNotMatch(code, /responseDepth:\s*'quick'/);
+        assert.doesNotMatch(code, /mode:\s*null/);
         assert.match(code, /emotionalSignal:\s*'neutral'/);
         assert.match(code, /source\b/);
         // Detection happens at the integration point, never inside the factory.
