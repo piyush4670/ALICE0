@@ -405,6 +405,51 @@ test('interaction context cannot bypass PlanValidator', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// 7b) Part 7B: explicit intent passes through; AIBrain invents none
+// ---------------------------------------------------------------------------
+
+test('Part 7B: explicit intents pass through unchanged and none are invented', async () => {
+    // Every allowed intent value is forwarded to ContextBuilder as the exact
+    // same object AIBrain was given — AIBrain detects, infers, or normalizes
+    // no intent of its own.
+    for (const intent of ['information', 'action', 'conversation', 'clarification', 'unknown']) {
+        const { brain, contextBuilderStub } = createBrain();
+        const interactionContext = createInteractionContext({ intent });
+
+        await brain.processRequest('What is quantum computing?', { interactionContext });
+
+        assert.equal(contextBuilderStub.buildCalls.length, 1);
+        assert.strictEqual(contextBuilderStub.buildCalls[0].interactionContext, interactionContext,
+            `explicit intent "${intent}" must be forwarded by reference, unchanged`);
+        assert.equal(contextBuilderStub.buildCalls[0].interactionContext.intent, intent);
+    }
+
+    // No interactionContext supplied: request text alone must not make AIBrain
+    // fabricate one — the forwarded value stays exactly undefined.
+    const bare = createBrain();
+    await bare.brain.processRequest('What is quantum computing?');
+    assert.ok('interactionContext' in bare.contextBuilderStub.buildCalls[0]);
+    assert.equal(bare.contextBuilderStub.buildCalls[0].interactionContext, undefined);
+
+    // End-to-end through the real ContextBuilder: an explicit intent survives
+    // the full AIBrain path, and a request-only call still renders the
+    // documented default — nothing was inferred from the question wording.
+    const explicitAdapter = new RecordingAdapter();
+    const explicitBrain = new AIBrain({ adapter: explicitAdapter, contextBuilder: realContextBuilder });
+    await explicitBrain.processRequest('What is quantum computing?', {
+        interactionContext: createInteractionContext({ intent: 'action' })
+    });
+    assert.match(explicitAdapter.generateCalls[0].prompt, /- Intent: action/);
+    assert.doesNotMatch(explicitAdapter.generateCalls[0].prompt, /- Intent: unknown/);
+
+    const requestOnlyAdapter = new RecordingAdapter();
+    const requestOnlyBrain = new AIBrain({ adapter: requestOnlyAdapter, contextBuilder: realContextBuilder });
+    await requestOnlyBrain.processRequest('What is quantum computing?');
+    assert.match(requestOnlyAdapter.generateCalls[0].prompt, /- Intent: unknown/);
+    assert.doesNotMatch(requestOnlyAdapter.generateCalls[0].prompt, /- Intent: information/);
+});
+
+// ---------------------------------------------------------------------------
 // 8) No network access is introduced by this plumbing
 // ---------------------------------------------------------------------------
 
