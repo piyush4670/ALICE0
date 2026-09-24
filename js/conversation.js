@@ -22,6 +22,7 @@ import { agent } from './agent.js';
 import { permissions } from './permissions.js';
 import { aiBrain } from './ai/aiBrain.js';
 import { createInteractionContext } from './ai/interactionContext.js';
+import { detectIntent } from './ai/intentDetector.js';
 import { delay } from './utils.js';
 
 class ConversationManager {
@@ -613,9 +614,10 @@ class ConversationManager {
      * AI Brain → Plan Validator → Agent → Permission Gateway → Skills.
      *
      * Part 6 supplies Interaction Context metadata on the AI Brain call.
-     * Source is explicitly passed by the command-entry path; all other
-     * values remain fixed. Nothing is inferred or selected, and execution
-     * behaviour is unchanged.
+     * Source is explicitly passed by the command-entry path; intent comes
+     * from the deterministic Part 7C detector; all other values remain
+     * fixed. Nothing is inferred by the factory, and execution behaviour
+     * is unchanged.
      */
     async _processWithSkills(text, token = null, source = 'text') {
         state.set('aliceState', CONFIG.states.UNDERSTANDING);
@@ -627,14 +629,17 @@ class ConversationManager {
             try {
                 // Part 7A: deterministic turn lifecycle — first command is 'new',
                 // subsequent commands in the same conversation are 'follow_up'.
-                // Source is explicitly supplied by the command entry path; the
-                // remaining values are fixed caller input, never inferred.
-                // The factory below is the single normalization boundary.
+                // Source is explicitly supplied by the command entry path.
+                // Part 7C: intent comes from the deterministic detector
+                // (pure, conservative, LLM/skill/permission independent);
+                // all remaining values are fixed caller input, never inferred.
+                // The factory below is the single normalization boundary and
+                // never performs detection itself.
                 const turnType = this._hasHadInteraction ? 'follow_up' : 'new';
                 this._hasHadInteraction = true;
                 const interactionContext = createInteractionContext({
                     turnType,
-                    intent: 'unknown',
+                    intent: detectIntent(text).intent,
                     responseDepth: 'quick',
                     mode: null,
                     emotionalSignal: 'neutral',

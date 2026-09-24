@@ -296,16 +296,19 @@ describe('ConversationManager deterministic turn lifecycle (Part 7A)', { concurr
             const ctx = stub.calls[0].options.interactionContext;
             // request is factory default '' per existing contract
             assert.equal(ctx.request, '');
-            // Must equal factory output for given turnType and source
+            // Must equal factory output for given turnType and source.
+            // Part 7C: intent now comes from the deterministic detector
+            // ('Explain photosynthesis' → information); all other fields fixed.
             const expected = createInteractionContext({
                 turnType: 'new',
-                intent: 'unknown',
+                intent: 'information',
                 responseDepth: 'quick',
                 mode: null,
                 emotionalSignal: 'neutral',
                 source: 'text'
             });
             assert.deepEqual(ctx, expected);
+            assert.equal(ctx.intent, 'information', 'detected intent is forwarded');
         });
     });
 
