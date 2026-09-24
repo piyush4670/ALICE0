@@ -20,6 +20,7 @@ const { aiBrain } = await import('../js/ai/aiBrain.js');
 const { detectPersonalityMode } = await import('../js/ai/personalityModeDetector.js');
 const { detectIntent } = await import('../js/ai/intentDetector.js');
 const { detectResponseDepth } = await import('../js/ai/responseDepthDetector.js');
+const { detectEmotionalSignal } = await import('../js/ai/emotionalSignalDetector.js');
 globalThis.setInterval = nativeSetInterval;
 
 function stubBrain() {
@@ -38,13 +39,17 @@ describe('ConversationManager Part 7E integration', { concurrency: 1 }, () => {
         try {
             for (const t of inputs) await conversation._processWithSkills(t, null, 'voice');
             assert.equal(stub.calls.length, inputs.length);
+            const expectedSignals = ['neutral', 'neutral', 'sad', 'neutral', 'neutral'];
             stub.calls.forEach((call, i) => {
                 const ctx = call.options.interactionContext;
                 assert.equal(ctx.mode, detectPersonalityMode(call.text).mode);
                 assert.equal(ctx.intent, detectIntent(call.text).intent);
                 assert.equal(ctx.responseDepth, detectResponseDepth(call.text).depth);
                 assert.equal(ctx.turnType, i === 0 ? 'new' : 'follow_up');
-                assert.equal(ctx.emotionalSignal, 'neutral');
+                // Part 8A: cue-free requests stay neutral; "I'm sad." is the
+                // explicit sad phrase. Mode detection itself is unchanged.
+                assert.equal(ctx.emotionalSignal, expectedSignals[i]);
+                assert.equal(ctx.emotionalSignal, detectEmotionalSignal(call.text).signal);
                 assert.equal(ctx.source, 'voice');
             });
             assert.deepEqual(stub.calls.map(c => c.options.interactionContext.mode), ['teacher', 'guardian', null, null, null]);
@@ -68,6 +73,7 @@ describe('ConversationManager Part 7E integration', { concurrency: 1 }, () => {
         assert.match(src, /import\s*\{\s*detectPersonalityMode\s*\}\s*from\s*['"]\.\/ai\/personalityModeDetector\.js['"]/);
         assert.match(src, /mode:\s*detectPersonalityMode\(text\)\.mode/);
         assert.doesNotMatch(src, /\bmode:\s*null/);
-        assert.match(src, /emotionalSignal:\s*'neutral'/);
+        assert.match(src, /emotionalSignal:\s*detectEmotionalSignal\(text\)\.signal/);
+        assert.doesNotMatch(src, /emotionalSignal:\s*'neutral'/);
     });
 });

@@ -9,8 +9,9 @@
 // createInteractionContext() using fixed safe values, an explicitly supplied
 // source, and the deterministic detector verdicts (Part 7C intent, Part 7D
 // responseDepth, Part 7E mode — each for the exact request text), then
-// forward that object. It must not detect emotion or source, and it must
-// not select a mode or response depth on its own. Part 7A adds
+// forward that object. It must not infer emotion or source itself, and it must
+// not select a mode or response depth on its own. Part 8A supplies
+// emotionalSignal from the explicit-phrase detector only. Part 7A adds
 // deterministic turn lifecycle: first command => new, subsequent => follow_up.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -87,22 +88,23 @@ const { createInteractionContext } = await import('../js/ai/interactionContext.j
 const { detectIntent } = await import('../js/ai/intentDetector.js');
 const { detectResponseDepth } = await import('../js/ai/responseDepthDetector.js');
 const { detectPersonalityMode } = await import('../js/ai/personalityModeDetector.js');
+const { detectEmotionalSignal } = await import('../js/ai/emotionalSignalDetector.js');
 const { CONFIG } = await import('../js/config.js');
 
 globalThis.setInterval = nativeSetInterval;
 
 // Fixed fields. turnType comes from the Part 7A lifecycle, intent from the
-// Part 7C deterministic detector, responseDepth from the Part 7D detector
-// and mode from the Part 7E detector (each supplied per request text below) —
-// all explicit inputs, never inferred inside the factory. Only
-// emotionalSignal remains a fixed safe default.
+// Part 7C deterministic detector, responseDepth from the Part 7D detector,
+// mode from the Part 7E detector, and emotionalSignal from the Part 8A
+// detector (each supplied per request text below) — all explicit inputs,
+// never inferred inside the factory.
 function contextInput(source = 'text', turnType = 'new', intent = 'unknown', text = '') {
     return {
         turnType,
         intent,
         responseDepth: detectResponseDepth(text).depth,
         mode: detectPersonalityMode(text).mode,
-        emotionalSignal: 'neutral',
+        emotionalSignal: detectEmotionalSignal(text).signal,
         source
     };
 }
@@ -163,7 +165,11 @@ function assertForwardedCall(call, expectedText, expectedSource = 'text', expect
         call.options.interactionContext.mode, expectedMode,
         `mode must equal detectPersonalityMode(${JSON.stringify(expectedText)}).mode`
     );
-    assert.equal(call.options.interactionContext.emotionalSignal, 'neutral');
+    assert.equal(
+        call.options.interactionContext.emotionalSignal,
+        detectEmotionalSignal(expectedText).signal,
+        `emotionalSignal must equal detectEmotionalSignal(${JSON.stringify(expectedText)}).signal`
+    );
     assert.equal(call.options.interactionContext.source, expectedSource);
 }
 
@@ -320,11 +326,13 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             assert.equal(stub.calls.length, 1);
             // Should be follow_up because previous interaction exists; the
             // wording cannot change anything the detectors do not explicitly
-            // detect for it (no injected permissions, emotion, or turn type).
+            // detect for it (no injected permissions or turn type). Part 8A
+            // honors only a listed explicit phrase: "i am angry" is angry;
+            // bare "frustrated" is not a listed phrase and does not outrank it.
             assertForwardedCall(stub.calls[0], loaded, 'text', 'follow_up');
             assert.equal(stub.calls[0].options.interactionContext.intent, 'unknown');
-            assert.equal(stub.calls[0].options.interactionContext.emotionalSignal, 'neutral',
-                'emotional wording must never change the fixed neutral signal');
+            assert.equal(stub.calls[0].options.interactionContext.emotionalSignal, 'angry',
+                'explicit "i am angry" is detected; bare "frustrated" does not outrank it');
             // Part 7E: the explicit "guardian mode" cue IS honored — mode-like
             // wording changes exactly what the detector detects, nothing more.
             assert.equal(stub.calls[0].options.interactionContext.mode, 'guardian');
@@ -372,8 +380,9 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
         // Part 7C: intent comes from the deterministic detector; the
         // hardcoded 'unknown' placeholder is gone. Part 7D/7E: responseDepth
         // and mode likewise come from the deterministic detectors; the old
-        // hardcoded 'quick'/null placeholders are gone. emotionalSignal
-        // remains the fixed safe default.
+        // hardcoded 'quick'/null placeholders are gone. Part 8A: emotionalSignal
+        // comes from the explicit-phrase detector; the hardcoded neutral
+        // placeholder is gone.
         assert.match(
             source,
             /import\s*\{\s*detectIntent\s*\}\s*from\s*['"]\.\/ai\/intentDetector\.js['"]/
@@ -402,7 +411,18 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
             'responseDepth must come from detectResponseDepth(text)');
         assert.match(code, /mode:\s*detectPersonalityMode\(text\)\.mode/,
             'mode must come from detectPersonalityMode(text)');
-        assert.match(code, /emotionalSignal:\s*'neutral'/);
+        assert.match(
+            source,
+            /import\s*\{\s*detectEmotionalSignal\s*\}\s*from\s*['"]\.\/ai\/emotionalSignalDetector\.js['"]/
+        );
+        assert.equal(
+            code.match(/detectEmotionalSignal\s*\(/g).length,
+            1,
+            'there is exactly one detectEmotionalSignal call'
+        );
+        assert.match(code, /emotionalSignal:\s*detectEmotionalSignal\(text\)\.signal/,
+            'emotionalSignal must come from detectEmotionalSignal(text) (Part 8A)');
+        assert.doesNotMatch(code, /emotionalSignal:\s*'neutral'/);
         assert.match(code, /source/);
 
         // No inference logic beyond the Part 7C/7D/7E detectors (no emotion,
@@ -411,7 +431,12 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
         assert.doesNotMatch(source, /INTERACTION_(?:INTENTS|RESPONSE_DEPTHS|MODES|EMOTIONAL_SIGNALS|SOURCES|CONTEXT_DEFAULTS)/);
         assert.doesNotMatch(source, /normalizeEnum|normalizeRequest|normalizeMode/);
         assert.doesNotMatch(source, /DEEP_PHRASES|EXPLAIN_PHRASES|QUICK_PHRASES|MODE_CUES/);
-        assert.doesNotMatch(source, /detectEmotion|detectSource|classifyIntent|classifySource|sentiment|selectMode|selectDepth|inferSource|probabilit|embedding/);
+        // Part 8A calls detectEmotionalSignal. Strip that allowed identifier,
+        // then apply the original forbidden-pattern guard unchanged.
+        assert.doesNotMatch(
+            source.replace(/detectEmotionalSignal/g, ''),
+            /detectEmotion|detectSource|classifyIntent|classifySource|sentiment|selectMode|selectDepth|inferSource|probabilit|embedding/
+        );
         // The old Part 6 check for absence of follow_up is now obsolete; Part 7A introduces follow_up deterministically
         assert.doesNotMatch(source, /from\s*['\"]\.\/ai\/planValidator\.js['\"]/);
         assert.doesNotMatch(source, /from\s*['\"]\.\/ai\/httpModelAdapter\.js['\"]/);
