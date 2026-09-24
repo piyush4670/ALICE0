@@ -30,7 +30,7 @@ globalThis.setInterval = (...args) => {
 
 const { contextBuilder } = await import('../js/ai/contextBuilder.js');
 const { ALICE_IDENTITY } = await import('../js/ai/aliceIdentity.js');
-const { createInteractionContext } = await import('../js/ai/interactionContext.js');
+const { createInteractionContext, INTERACTION_EMOTIONAL_SIGNALS } = await import('../js/ai/interactionContext.js');
 globalThis.setInterval = nativeSetInterval;
 
 function createLegacyContext(overrides = {}) {
@@ -107,7 +107,8 @@ test('uses documented safe interaction-context defaults when none is supplied', 
         '- Broad contextual signal: neutral',
         '- Source: text'
     ].join('\n')));
-    assert.match(prompt, /interaction metadata, not a claim that ALICE experiences human emotions/i);
+    assert.match(prompt, /emotionalSignal represents an explicit user-expressed contextual signal detected by ALICE0/i);
+    assert.match(prompt, /When emotionalSignal is neutral, handle the request normally and do not assume an emotional state/i);
 });
 
 test('renders explicit normalized interaction-context values cleanly and unchanged', () => {
@@ -140,6 +141,71 @@ test('renders explicit normalized interaction-context values cleanly and unchang
         '- Source: text'
     ].join('\n')));
     assert.doesNotMatch(prompt, /\[object Object\]/);
+});
+
+test('Part 8B: renders all interaction fields with an explicit, bounded emotional-signal behavior contract', () => {
+    const interactionContext = createInteractionContext({
+        turnType: 'follow_up',
+        intent: 'clarification',
+        responseDepth: 'deep',
+        mode: 'guardian',
+        emotionalSignal: 'frustrated',
+        source: 'voice'
+    });
+    const built = contextBuilder.buildContext({
+        request: 'I am frustrated. Please explain the last step again.',
+        interactionContext,
+        includeTools: false,
+        includeMemory: false,
+        includeHistory: false,
+        includeTaskState: false
+    });
+    const prompt = contextBuilder.formatForPrompt(built);
+
+    // The refinement is additive: every established interaction field still
+    // reaches the formatted model context alongside emotionalSignal.
+    assert.deepEqual(Object.keys(built.interactionContext).sort(), [
+        'emotionalSignal', 'intent', 'mode', 'request', 'responseDepth', 'source', 'turnType'
+    ]);
+    assert.ok(prompt.includes([
+        'Interaction Context:',
+        '- Turn type: follow_up',
+        '- Intent: clarification',
+        '- Response depth: deep',
+        '- Personality mode: guardian',
+        '- Broad contextual signal: frustrated',
+        '- Source: voice'
+    ].join('\n')));
+
+    assert.match(prompt, /emotionalSignal represents an explicit user-expressed contextual signal detected by ALICE0\./);
+    assert.match(prompt, /user's expressed signal, not an emotion experienced by ALICE\./);
+    assert.match(prompt, /A non-neutral signal may influence tone, patience, explanation style, and conversational sensitivity\./);
+    assert.match(prompt, /Do not treat it as a diagnosis or certainty about the user's internal mental state\./);
+    assert.match(prompt, /Remain honest and non-judgmental\./);
+    assert.match(prompt, /never overrides safety, permissions, tool validation, or user autonomy\./i);
+});
+
+test('Part 8B: handles neutral normally and renders every non-neutral signal unchanged', () => {
+    const buildPrompt = emotionalSignal => contextBuilder.formatForPrompt(contextBuilder.buildContext({
+        request: 'Offline prompt assembly',
+        interactionContext: createInteractionContext({ emotionalSignal }),
+        includeTools: false,
+        includeMemory: false,
+        includeHistory: false,
+        includeTaskState: false
+    }));
+
+    const neutralPrompt = buildPrompt('neutral');
+    assert.ok(neutralPrompt.includes('- Broad contextual signal: neutral'));
+    assert.match(neutralPrompt, /When emotionalSignal is neutral, handle the request normally and do not assume an emotional state\./);
+
+    for (const emotionalSignal of INTERACTION_EMOTIONAL_SIGNALS.filter(signal => signal !== 'neutral')) {
+        const prompt = buildPrompt(emotionalSignal);
+        assert.ok(
+            prompt.includes(`- Broad contextual signal: ${emotionalSignal}`),
+            `prompt must render non-neutral emotionalSignal ${JSON.stringify(emotionalSignal)} unchanged`
+        );
+    }
 });
 
 test('normalizes invalid interaction values through the Part 2 factory', () => {
@@ -224,7 +290,7 @@ test('keeps legacy ContextBuilder prompt sections and callers compatible', () =>
     assert.match(prompt, /Interaction Context:\n- Turn type: new/);
 });
 
-test('does not introduce network access during context building or formatting', async () => {
+test('Part 8B: does not duplicate detector logic or introduce network access', async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = () => { throw new Error('network access attempted'); };
 
@@ -243,5 +309,6 @@ test('does not introduce network access during context building or formatting', 
     }
 
     const source = await readFile(new URL('../js/ai/contextBuilder.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /emotionalSignalDetector|detectEmotionalSignal|SIGNAL_PHRASES|EMOTIONAL_SIGNALS/);
     assert.doesNotMatch(source, /\bfetch\s*\(|XMLHttpRequest|WebSocket|\bhttps?:\/\//);
 });
