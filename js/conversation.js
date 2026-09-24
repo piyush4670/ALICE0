@@ -24,6 +24,7 @@ import { aiBrain } from './ai/aiBrain.js';
 import { createInteractionContext } from './ai/interactionContext.js';
 import { detectIntent } from './ai/intentDetector.js';
 import { detectResponseDepth } from './ai/responseDepthDetector.js';
+import { detectPersonalityMode } from './ai/personalityModeDetector.js';
 import { delay } from './utils.js';
 
 class ConversationManager {
@@ -636,7 +637,9 @@ class ConversationManager {
                 // Part 7D: responseDepth comes from the deterministic
                 // response-depth detector — only explicit wording in the
                 // request changes it, never the apparent complexity of the
-                // question. All remaining values are fixed caller input,
+                // question. Part 7E: mode comes from the deterministic
+                // personality-mode detector (explicit cues only).
+                // All remaining values are fixed caller input,
                 // never inferred. The factory below is the single
                 // normalization boundary and never performs detection itself.
                 const turnType = this._hasHadInteraction ? 'follow_up' : 'new';
@@ -645,7 +648,7 @@ class ConversationManager {
                     turnType,
                     intent: detectIntent(text).intent,
                     responseDepth: detectResponseDepth(text).depth,
-                    mode: null,
+                    mode: detectPersonalityMode(text).mode,
                     emotionalSignal: 'neutral',
                     source
                 });
