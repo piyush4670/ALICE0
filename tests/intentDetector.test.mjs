@@ -288,3 +288,125 @@ describe('Part 7C deterministic intent detector', () => {
         assert.equal(Array.isArray(exports.DETECTION_CONFIDENCES), true);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Part 8F: contextual second pass — an emotional/contextual preface no longer
+// hides the user's actual request. Uses only the existing helpers above, the
+// pure detector module, and Node built-ins. No network, no skills, no AI.
+// ---------------------------------------------------------------------------
+describe('Part 8F contextual intent detection (second pass)', () => {
+    // --- A. Existing behavior remains unchanged ------------------------------
+    test('A. direct-prefix behavior is unchanged', () => {
+        expectIntent('What is photosynthesis?', 'information');
+        expectIntent('Calculate 2 + 2', 'action');
+        expectIntent('Hello Alice', 'conversation');
+        expectIntent('Can you clarify?', 'clarification');
+        expectIntent('purple elephants danced quietly', 'unknown', 'low');
+        // A few more direct anchors for stability.
+        expectIntent('Open YouTube', 'action');
+        expectIntent('Explain quantum computing', 'information');
+        expectIntent('Tell me about black holes', 'information');
+        expectIntent('What do you mean?', 'clarification');
+    });
+
+    // --- B. New contextual-prefix cases (the Part 8F MUSTs) ------------------
+    test('B. emotional preface no longer hides the request', () => {
+        expectIntent("I'm frustrated. What is photosynthesis?", 'information');
+        expectIntent("I'm sad. Calculate 25% of 800.", 'action');
+        expectIntent("I'm bored. Tell me one interesting fact.", 'information');
+    });
+
+    // --- C. Additional sentence-boundary cases -------------------------------
+    test('C. further boundaries and bare content requests', () => {
+        expectIntent("I'm confused. Explain quantum computing.", 'information');
+        expectIntent("I'm nervous. Open YouTube.", 'action');
+        // Exclamation and question boundaries behave like periods.
+        expectIntent("I'm frustrated! What is photosynthesis?", 'information');
+        expectIntent("I'm nervous! Open YouTube.", 'action');
+        // A filler segment between preface and request is still found.
+        expectIntent("I'm sad. Hmm. Open YouTube.", 'action');
+        // Case and whitespace are normalized before segment matching.
+        expectIntent("I'M BORED. TELL ME ONE INTERESTING FACT.", 'information');
+        expectIntent("I'm frustrated.   What   is photosynthesis?  ", 'information');
+        // Bare content requests are information too (same narrow prefixes).
+        expectIntent('Tell me one interesting fact.', 'information');
+        expectIntent('Tell me a joke', 'information');
+        expectIntent('Tell me an interesting story', 'information');
+        expectIntent('Tell me some facts', 'information');
+        expectIntent('Tell me something interesting', 'information');
+    });
+
+    // --- D. False-positive protection ----------------------------------------
+    test('D. intent-looking words inside a clause do not over-classify', () => {
+        // Required guards: no sentence boundary, so no second segment starts
+        // with an intent prefix — the isolated word must not fire.
+        expectIntent("I don't know what happened.", 'unknown', 'low');
+        expectIntent("I'm frustrated because you calculate things differently.", 'unknown', 'low');
+        expectIntent('Tell me why you think that.', 'unknown', 'low');
+        // Bare "tell me" plus reasoning/opinion wording stays unknown.
+        expectIntent('Tell me how you feel about that.', 'unknown', 'low');
+        expectIntent('Tell me what you think.', 'unknown', 'low');
+        // A trailing segment that merely contains an intent word (not at its
+        // start) must not fire either.
+        expectIntent("I'm frustrated. I don't know what happened.", 'unknown', 'low');
+        expectIntent("I'm sad. Please don't calculate anything yet.", 'unknown', 'low');
+        expectIntent("I'm bored. Tell me why you think that.", 'unknown', 'low');
+        expectIntent('I was wondering what time it is.', 'unknown', 'low');
+        expectIntent("I'm happy because you explain things well.", 'unknown', 'low');
+        expectIntent('The calculator is on the table.', 'unknown', 'low');
+        // Documented limits: commas are not sentence boundaries, and only a
+        // limited set of trailing segments is inspected.
+        expectIntent("I'm sad, what is photosynthesis?", 'unknown', 'low');
+        expectIntent('Tell me, one interesting fact.', 'unknown', 'low');
+    });
+
+    // --- E. Precedence is preserved ------------------------------------------
+    test('E. clarification still wins, action still beats information', () => {
+        // Clarification wins even after a preface (global phrase, highest).
+        expectIntent("I'm frustrated. What do you mean?", 'clarification');
+        expectIntent("I'm sad. Can you clarify?", 'clarification');
+        expectIntent('Start over and explain that again', 'clarification');
+        // Action prefix at a segment start beats informational wording inside.
+        expectIntent("I'm nervous. Search the web for what is photosynthesis", 'action');
+        expectIntent("I'm sad. Calculate why the sky is blue", 'action');
+        expectIntent('Search the web for what is photosynthesis', 'action');
+        // Direct-prefix matches still win over any later segment.
+        expectIntent('What is photosynthesis? Open YouTube.', 'information');
+        expectIntent('Open YouTube. What is photosynthesis?', 'action');
+    });
+
+    // --- Contract, purity, and determinism for second-pass results -----------
+    test('second-pass results keep the exact contract and purity', () => {
+        const requests = [
+            "I'm frustrated. What is photosynthesis?",
+            "I'm sad. Calculate 25% of 800.",
+            "I'm bored. Tell me one interesting fact.",
+            "I'm confused. Explain quantum computing.",
+            "I'm nervous. Open YouTube.",
+            "I don't know what happened.",
+            "I'm frustrated because you calculate things differently.",
+            'Tell me why you think that.'
+        ];
+        for (const request of requests) {
+            assertContract(detectIntent(request), JSON.stringify(request));
+        }
+        // Matched → high; no reliable match → low/unknown.
+        assert.equal(detectIntent("I'm bored. Tell me one interesting fact.").confidence, 'high');
+        assert.deepEqual(detectIntent("I'm frustrated because you calculate things differently."),
+            { intent: 'unknown', confidence: 'low' });
+
+        // Frozen, fresh, deterministic, and non-mutating.
+        const input = "I'm bored. Tell me one interesting fact.";
+        const first = detectIntent(input);
+        const second = detectIntent(input);
+        assert.notStrictEqual(first, second, 'each call returns a fresh object');
+        assert.deepEqual(first, second, 'detection is deterministic');
+        assert.throws(() => { first.intent = 'unknown'; }, TypeError);
+        assert.equal(input, "I'm bored. Tell me one interesting fact.", 'input must not be mutated');
+
+        // Invalid input still falls back conservatively and never throws.
+        for (const invalid of [null, undefined, 42, true, {}, [], Symbol('x')]) {
+            expectIntent(invalid, 'unknown', 'low');
+        }
+    });
+});

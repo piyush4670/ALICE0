@@ -1,5 +1,7 @@
 /**
  * Part 7C: deterministic intent detection v1 — a THIN INTELLIGENCE SLICE.
+ * Part 8F: contextual second pass — an emotional/contextual preface no
+ * longer hides the user's actual request.
  *
  * detectIntent(request) classifies an obvious user request into one of
  * five transparent categories and reports a qualitative confidence.
@@ -21,6 +23,18 @@
  *     → unknown, so "What do you mean?" stays clarification even though
  *     it starts with "what", and "Search the web for ..." stays action
  *     even though it contains informational wording.
+ *   - Part 8F second pass: when the beginning yields no high-confidence
+ *     intent, inspect segment starts after common sentence boundaries
+ *     ('.', '!', '?') in order, with the same precedence per segment.
+ *     Prefix checks stay segment-start only — intent-looking words
+ *     inside a clause ("because you calculate ...", "what happened"
+ *     without a leading boundary) never fire. Only a limited set of
+ *     trailing segments is inspected; commas, semicolons, and colons
+ *     are not boundaries.
+ *   - Part 8F narrow content-request forms ("tell me a/an/one/some/
+ *     something ...") so "Tell me one interesting fact." is information
+ *     while bare "tell me" stays unknown ("Tell me why you think that."
+ *     is not classified as information).
  *
  * Confidence is qualitative only: an obvious match is 'high'; an
  * ambiguous or unmatched request is 'unknown' with 'low'. Every result
@@ -81,6 +95,16 @@ const INFORMATION_PREFIXES = Object.freeze([
     'who',
     'explain',
     'tell me about',
+    // Part 8F: narrow content-request forms — "tell me" plus a determiner
+    // that asks for an item ("a joke", "an explanation", "one fact",
+    // "some examples", "something interesting"). Bare "tell me" is
+    // deliberately not a prefix, so "Tell me why you think that." stays
+    // unknown.
+    'tell me a',
+    'tell me an',
+    'tell me one',
+    'tell me some',
+    'tell me something',
     'how does',
     'how do',
     'how is'
@@ -140,6 +164,30 @@ function matchesAnyPrefix(normalized, prefixes) {
     return prefixes.some((prefix) => prefixMatch(normalized, prefix));
 }
 
+// --- Part 8F second pass (small, deterministic) -------------------------------
+
+// First segment plus up to three trailing segments after boundaries.
+const SECOND_PASS_MAX_SEGMENTS = 4;
+
+/**
+ * Split normalized text on common sentence boundaries ('.', '!', '?').
+ * Returns up to SECOND_PASS_MAX_SEGMENTS non-empty trimmed segments in
+ * order. Commas, semicolons, and colons are not boundaries, so subordinate
+ * clauses never become segments.
+ */
+function splitSegments(normalized) {
+    const raw = normalized.split(/[.!?]+/);
+    const segments = [];
+    for (const part of raw) {
+        const trimmed = part.trim();
+        if (trimmed !== '') {
+            segments.push(trimmed);
+            if (segments.length >= SECOND_PASS_MAX_SEGMENTS) break;
+        }
+    }
+    return segments;
+}
+
 // --- Detector ----------------------------------------------------------------
 
 /**
@@ -148,6 +196,11 @@ function matchesAnyPrefix(normalized, prefixes) {
  * Pure and side-effect free: the same input always yields an equal,
  * freshly frozen result. Never throws — invalid input and internal
  * failures fall back to { intent: 'unknown', confidence: 'low' }.
+ *
+ * Part 8F: the direct-prefix rules above run first and keep their
+ * precedence; only when they yield no high-confidence intent, a limited
+ * second pass inspects segment starts after sentence boundaries with the
+ * same clarification → action → information → conversation order.
  *
  * @param {*} request Arbitrary user request (expected: string).
  * @returns {{ intent: string, confidence: string }} Frozen result;
@@ -171,6 +224,27 @@ export function detectIntent(request) {
         }
         if (matchesAnyPhrase(normalized, CONVERSATION_PHRASES)) {
             return Object.freeze({ intent: 'conversation', confidence: 'high' });
+        }
+
+        // Part 8F second pass: no high-confidence intent from the beginning —
+        // inspect segment starts after sentence boundaries, in order, with
+        // the same precedence per segment. Prefix checks stay segment-start
+        // only, so intent-looking words inside a clause never fire.
+        const segments = splitSegments(normalized);
+        for (let i = 1; i < segments.length; i++) {
+            const segment = segments[i];
+            if (matchesAnyPhrase(segment, CLARIFICATION_PHRASES)) {
+                return Object.freeze({ intent: 'clarification', confidence: 'high' });
+            }
+            if (matchesAnyPrefix(segment, ACTION_PREFIXES)) {
+                return Object.freeze({ intent: 'action', confidence: 'high' });
+            }
+            if (matchesAnyPrefix(segment, INFORMATION_PREFIXES)) {
+                return Object.freeze({ intent: 'information', confidence: 'high' });
+            }
+            if (matchesAnyPhrase(segment, CONVERSATION_PHRASES)) {
+                return Object.freeze({ intent: 'conversation', confidence: 'high' });
+            }
         }
 
         // Ambiguous / no obvious match.
