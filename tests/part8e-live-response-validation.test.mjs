@@ -20,13 +20,15 @@
 // production code, prompt, or model setting is changed; this file only
 // imports production modules.
 //
-// Known gap, kept visible as TODO tests (reported, not failing): the brief
-// expects intent 'information'/'action' for scenarios 1, 2 and 4, but the
-// existing Part 7C detector matches intent prefixes at the START of the
-// request, so a leading emotional sentence ("I'm frustrated. ...") yields
-// 'unknown'; "Tell me one interesting fact" also matches no information
-// prefix on its own. The scenario tests pin what production delivers today;
-// closing the gap needs a production detector change (out of scope here).
+// Part 8F update: the intent gap is now closed, so no TODO case remains. As
+// filed in Part 8E, the brief expected 'information'/'action' for scenarios
+// 1, 2 and 4, but the Part 7C detector matched intent prefixes only at the
+// START of the request, so a leading emotional sentence yielded 'unknown'
+// (and "Tell me one interesting fact" matched no information prefix). The
+// Part 8F detector adds a limited second pass over segment starts after
+// sentence boundaries plus narrow "tell me a/an/one/some/something"
+// information prefixes; the pinned `delivered` intents below were updated
+// deliberately to the brief values.
 //
 // Optional live check: runs only when ALICE_LIVE_AI_TEST=1 and is skipped
 // otherwise. It sends the same four requests through the configured
@@ -127,17 +129,15 @@ const SCENARIOS = [
         id: 'S1 emotional + information',
         request: "I'm frustrated. What is photosynthesis?",
         brief: { emotionalSignal: 'frustrated', intent: 'information', responseDepth: 'quick' },
-        delivered: { turnType: 'new', intent: 'unknown', responseDepth: 'quick', mode: null, emotionalSignal: 'frustrated', source: 'text' },
-        gap: 'Part 7C detectIntent only matches prefixes at the start of the request: the leading "I\'m frustrated." '
-            + 'hides "What ..." (the bare question is "information"). Needs a production detector change.'
+        delivered: { turnType: 'new', intent: 'information', responseDepth: 'quick', mode: null, emotionalSignal: 'frustrated', source: 'text' },
+        gap: null // Part 8F: second pass finds "What ..." after the preface.
     },
     {
         id: 'S2 emotional + action',
         request: "I'm sad. Calculate 25% of 800.",
         brief: { emotionalSignal: 'sad', intent: 'action' },
-        delivered: { turnType: 'new', intent: 'unknown', responseDepth: 'quick', mode: null, emotionalSignal: 'sad', source: 'text' },
-        gap: 'Part 7C detectIntent only matches prefixes at the start of the request: the leading "I\'m sad." '
-            + 'hides "Calculate ..." (the bare command is "action"). Needs a production detector change.'
+        delivered: { turnType: 'new', intent: 'action', responseDepth: 'quick', mode: null, emotionalSignal: 'sad', source: 'text' },
+        gap: null // Part 8F: second pass finds "Calculate ..." after the preface.
     },
     {
         id: 'S3 explicit explanation',
@@ -150,10 +150,8 @@ const SCENARIOS = [
         id: 'S4 casual/curious',
         request: "I'm bored. Tell me one interesting fact.",
         brief: { emotionalSignal: 'bored', intent: 'information' },
-        delivered: { turnType: 'new', intent: 'unknown', responseDepth: 'quick', mode: null, emotionalSignal: 'bored', source: 'text' },
-        gap: 'Part 7C detectIntent only matches prefixes at the start of the request: the leading "I\'m bored." hides '
-            + 'the request, and "Tell me one interesting fact" matches no information prefix on its own '
-            + '("tell me about" does). Needs a production detector change.'
+        delivered: { turnType: 'new', intent: 'information', responseDepth: 'quick', mode: null, emotionalSignal: 'bored', source: 'text' },
+        gap: null // Part 8F: second pass plus narrow "tell me one" prefix.
     }
 ];
 const [S1, S2, S3, S4] = SCENARIOS;
@@ -401,7 +399,7 @@ describe('Part 8E: the real response path delivers the Parts 8A–8D input contr
         assert.equal(capture.interactionContext.emotionalSignal, 'frustrated');
         assert.equal(capture.interactionContext.responseDepth, 'quick');
         assert.equal(detectResponseDepth(S1.request).confidence, 'low');
-        // Brief intent 'information' is not delivered: see the TODO tests.
+        // Part 8F: brief intent 'information' is now delivered.
     });
 
     test(`${S2.id}: "${S2.request}"`, async () => {
@@ -421,7 +419,7 @@ describe('Part 8E: the real response path delivers the Parts 8A–8D input contr
         assert.ok(prompt.includes(
             'Reply: {"goal": "Calculate 25 percent of 800", "steps": [{"id": "step1", "skill": "calculator", "input": "25 percent of 800"}]}'));
         assert.match(sectionAt(prompt, 'Available Tools:'), /^- calculator: /m);
-        // Brief intent 'action' is not delivered: see the TODO tests.
+        // Part 8F: brief intent 'action' is now delivered.
     });
 
     test(`${S3.id}: "${S3.request}"`, async () => {
@@ -456,7 +454,7 @@ describe('Part 8E: the real response path delivers the Parts 8A–8D input contr
         // Brief: bored communication guidance; the actual request stays
         // present and primary (verbatim, final section — asserted above).
         assert.equal(capture.interactionContext.emotionalSignal, 'bored');
-        // Brief intent 'information' is not delivered: see the TODO tests.
+        // Part 8F: brief intent 'information' is now delivered.
     });
 
     test('the captured prompt is what ContextBuilder renders and what the configured adapter would send', async () => {
