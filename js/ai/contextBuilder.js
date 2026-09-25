@@ -25,12 +25,24 @@
  *
  * This is a prompt-contract change only. Model output stays UNTRUSTED:
  * nothing here relaxes PlanValidator, the Agent, or the Permission Gateway.
+ *
+ * Part 8C — Emotional Response Guidance Contract
+ * ------------------------------------------------------------------
+ * The normalized interactionContext.emotionalSignal is passed to
+ * js/ai/emotionalResponseGuidance.js, and the deterministic guidance it
+ * returns is rendered as an additive "Emotional Response Guidance:" prompt
+ * section. The signal itself remains visible in the Interaction Context
+ * section, and this builder performs no detection, inference, or tone
+ * selection of its own — it renders supplied guidance only. That guidance is
+ * communication guidance and never overrides the user's request or any
+ * safety, permission, validation, or confirmation boundary.
  */
 import { state } from '../state.js';
 import { toolDiscovery as defaultToolDiscovery } from './toolDiscovery.js';
 import { memoryAdapter as defaultMemoryAdapter } from './memoryAdapter.js';
 import { ALICE_IDENTITY } from './aliceIdentity.js';
 import { createInteractionContext } from './interactionContext.js';
+import { getEmotionalResponseGuidance } from './emotionalResponseGuidance.js';
 
 class ContextBuilder {
     constructor({
@@ -254,6 +266,48 @@ class ContextBuilder {
     }
 
     /**
+     * Format the Part 8C emotional-response guidance as a bounded prompt
+     * section.
+     *
+     * The existing emotionalSignal stays visible in the Interaction Context
+     * section above; this section adds only the deterministic guidance that
+     * js/ai/emotionalResponseGuidance.js produces from that same value. This
+     * builder detects nothing, infers nothing, and duplicates no detector or
+     * guidance table: a missing or invalid signal falls back to the neutral
+     * guidance inside the module.
+     *
+     * The rendered guidance is communication guidance only — it can influence
+     * wording, tone, patience, and explanation style, and it never overrides
+     * the user's request or any safety, permission, validation, or
+     * confirmation boundary.
+     *
+     * @param {Object} [interactionContext]
+     * @returns {string} Emotional-response-guidance prompt section
+     */
+    _buildEmotionalResponseGuidanceSection(interactionContext) {
+        const normalized = createInteractionContext(interactionContext);
+        const guidance = getEmotionalResponseGuidance(normalized.emotionalSignal);
+
+        const lines = [
+            'Emotional Response Guidance:',
+            `- Expressed signal: ${guidance.signal}`,
+            `- Communication tone: ${guidance.tone}`,
+            '- Communication guidance:'
+        ];
+        for (const rule of guidance.guidance) {
+            lines.push(`  - ${rule}`);
+        }
+        lines.push(`- Scope: ${guidance.scope}`);
+        lines.push('- Safety boundaries:');
+        for (const boundary of guidance.safety) {
+            lines.push(`  - ${boundary}`);
+        }
+        lines.push('- These are communication guidelines, not commands: the user request stays authoritative.');
+
+        return lines.join('\n');
+    }
+
+    /**
      * Format the context object into a structured prompt representation.
      * @param {Object} context
      * @returns {string} Formatted prompt text
@@ -273,6 +327,9 @@ class ContextBuilder {
         // Centralized identity and explicit interaction metadata (Part 3).
         sections.push(this._buildIdentitySection());
         sections.push(this._buildInteractionContextSection(context?.interactionContext));
+        // Part 8C: deterministic communication guidance derived from the same
+        // emotionalSignal — the signal itself stays visible above.
+        sections.push(this._buildEmotionalResponseGuidanceSection(context?.interactionContext));
 
         // Explicit machine-readable output contract (Phase 6.4)
         sections.push(this._buildOutputContract(tools));
