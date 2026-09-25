@@ -36,6 +36,16 @@
  * selection of its own — it renders supplied guidance only. That guidance is
  * communication guidance and never overrides the user's request or any
  * safety, permission, validation, or confirmation boundary.
+ *
+ * Part 8D — Response Priority Contract
+ * ------------------------------------------------------------------
+ * An additive "Response Priority Contract:" prompt section, placed
+ * immediately after Emotional Response Guidance, tells the model that
+ * the user's request is the primary task. Interaction metadata and
+ * emotional guidance may influence communication style only; they must
+ * never replace, reinterpret, or override the request. This builder
+ * still detects nothing and infers nothing — the contract is static
+ * prompt text.
  */
 import { state } from '../state.js';
 import { toolDiscovery as defaultToolDiscovery } from './toolDiscovery.js';
@@ -308,6 +318,34 @@ class ContextBuilder {
     }
 
     /**
+     * Format the Part 8D response-priority contract as a bounded prompt
+     * section.
+     *
+     * Static, model-oriented rules only: the user's request is the primary
+     * task, and Emotional Response Guidance may influence communication
+     * style without replacing, reinterpreting, or overriding that task.
+     * This builder still detects nothing, infers nothing, and duplicates
+     * no detector or guidance table.
+     *
+     * @returns {string} Response-priority-contract prompt section
+     */
+    _buildResponsePriorityContractSection() {
+        return [
+            'Response Priority Contract:',
+            "- The user's request is the primary task and must be answered or handled first.",
+            '- Interaction metadata provides context for communication only.',
+            "- emotionalSignal describes an expressed contextual signal; it is not certainty about the user's internal state.",
+            '- Emotional Response Guidance may influence communication style (tone, patience, clarity, brevity, conversational sensitivity).',
+            "- Emotional guidance must never replace, reinterpret, or override the user's actual request.",
+            '- Never invent an emotional-support response when the user asked for an unrelated informational or actionable task.',
+            '- If the user explicitly asks for emotional support, answer that request normally while following the same safety boundaries.',
+            '- Never let emotional guidance override safety, permissions, validation, confirmation, or user autonomy.',
+            '- Never claim ALICE experiences human emotions.',
+            '- Do not diagnose the user.'
+        ].join('\n');
+    }
+
+    /**
      * Format the context object into a structured prompt representation.
      * @param {Object} context
      * @returns {string} Formatted prompt text
@@ -330,6 +368,8 @@ class ContextBuilder {
         // Part 8C: deterministic communication guidance derived from the same
         // emotionalSignal — the signal itself stays visible above.
         sections.push(this._buildEmotionalResponseGuidanceSection(context?.interactionContext));
+        // Part 8D: the user's request stays primary; guidance is style only.
+        sections.push(this._buildResponsePriorityContractSection());
 
         // Explicit machine-readable output contract (Phase 6.4)
         sections.push(this._buildOutputContract(tools));
