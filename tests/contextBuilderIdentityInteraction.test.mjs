@@ -1,4 +1,5 @@
-// Part 3 ContextBuilder integration. Run: node --test tests/contextBuilderIdentityInteraction.test.mjs
+// Part 3 / Part 8D ContextBuilder integration.
+// Run: node --test tests/contextBuilderIdentityInteraction.test.mjs
 // Exercises only deterministic prompt/context assembly; no network access.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -311,4 +312,104 @@ test('Part 8B: does not duplicate detector logic or introduce network access', a
     const source = await readFile(new URL('../js/ai/contextBuilder.js', import.meta.url), 'utf8');
     assert.doesNotMatch(source, /emotionalSignalDetector|detectEmotionalSignal|SIGNAL_PHRASES|EMOTIONAL_SIGNALS/);
     assert.doesNotMatch(source, /\bfetch\s*\(|XMLHttpRequest|WebSocket|\bhttps?:\/\//);
+});
+
+test('Part 8D: prompt contains a Response Priority Contract that keeps the user request primary', () => {
+    const interactionContext = createInteractionContext({
+        turnType: 'follow_up',
+        intent: 'information',
+        responseDepth: 'explain',
+        mode: 'teacher',
+        emotionalSignal: 'frustrated',
+        source: 'text'
+    });
+    const prompt = contextBuilder.formatForPrompt(contextBuilder.buildContext({
+        request: "I'm frustrated. What is photosynthesis?",
+        interactionContext,
+        includeTools: false,
+        includeMemory: false,
+        includeHistory: false,
+        includeTaskState: false
+    }));
+
+    assert.ok(prompt.includes('Response Priority Contract:'));
+    assert.match(prompt, /The user's request is the primary task/);
+    assert.match(prompt, /must be answered or handled first/);
+    assert.match(prompt, /Emotional Response Guidance may influence communication style/);
+    assert.match(prompt, /must never replace, reinterpret, or override the user's actual request/);
+    assert.match(prompt, /Never invent an emotional-support response/);
+
+    // The contract sits immediately after Emotional Response Guidance and
+    // before the machine-readable output contract.
+    const guidanceAt = prompt.indexOf('Emotional Response Guidance:');
+    const contractAt = prompt.indexOf('Response Priority Contract:');
+    const outputAt = prompt.indexOf('Required JSON Output Contract');
+    assert.ok(guidanceAt >= 0 && contractAt > guidanceAt && outputAt > contractAt);
+});
+
+test('Part 8D: preserves existing emotional signal, guidance, identity, tools, memory, and history', () => {
+    const interactionContext = createInteractionContext({
+        turnType: 'follow_up',
+        intent: 'action',
+        responseDepth: 'quick',
+        mode: 'none',
+        emotionalSignal: 'sad',
+        source: 'voice'
+    });
+    const prompt = contextBuilder.formatForPrompt(createLegacyContext({
+        request: "I'm sad. Calculate 25% of 800.",
+        interactionContext
+    }));
+
+    // Existing identity, interaction context, and Part 8C guidance stay present.
+    assert.ok(prompt.includes(identitySectionFromFoundation()));
+    assert.ok(prompt.includes('- Broad contextual signal: sad'));
+    assert.ok(prompt.includes('- Expressed signal: sad'));
+    assert.ok(prompt.includes('Emotional Response Guidance:'));
+    assert.ok(prompt.includes('- Communication tone: gentle and patient'));
+    assert.ok(prompt.includes('- Turn type: follow_up'));
+    assert.ok(prompt.includes('- Intent: action'));
+    assert.ok(prompt.includes('- Source: voice'));
+
+    // Existing identity, output contract, tools, memory, and history remain.
+    assert.match(prompt, /^System:/);
+    assert.match(prompt, /Required JSON Output Contract/);
+    assert.match(prompt, /Available Tools:\n- project-status: Reads the current project status/);
+    assert.match(prompt, /Context & Memory:/);
+    assert.match(prompt, /Pinned Facts: The user prefers concise summaries\./);
+    assert.match(prompt, /Conversation History:/);
+    assert.match(prompt, /User: How is the project going\?/);
+    assert.match(prompt, /ALICE: I can summarize its status\./);
+    assert.ok(prompt.trimEnd().endsWith('User Request: "I\'m sad. Calculate 25% of 800."'));
+});
+
+test('Part 8D: does not duplicate detector/guidance implementation or introduce network calls', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = () => { throw new Error('network access attempted'); };
+
+    try {
+        const prompt = contextBuilder.formatForPrompt(contextBuilder.buildContext({
+            request: 'Offline prompt assembly',
+            interactionContext: createInteractionContext({ emotionalSignal: 'lonely' }),
+            includeTools: false,
+            includeMemory: false,
+            includeHistory: false,
+            includeTaskState: false
+        }));
+        assert.ok(prompt.includes('Response Priority Contract:'));
+        assert.ok(prompt.includes('- Broad contextual signal: lonely'));
+        assert.ok(prompt.includes('- Expressed signal: lonely'));
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+
+    const source = await readFile(new URL('../js/ai/contextBuilder.js', import.meta.url), 'utf8');
+    // Still a prompt-contract renderer: no second detector, no second
+    // guidance table, no hardcoded emotional replies, no network.
+    assert.match(source, /_buildResponsePriorityContractSection\(/);
+    assert.match(source, /import\s*\{\s*getEmotionalResponseGuidance\s*\}\s*from\s*['"]\.\/emotionalResponseGuidance\.js['"]/);
+    assert.doesNotMatch(source, /emotionalSignalDetector|detectEmotionalSignal|SIGNAL_PHRASES|EMOTIONAL_SIGNALS/);
+    assert.doesNotMatch(source, /\bfetch\s*\(|XMLHttpRequest|WebSocket|\bhttps?:\/\//);
+    // The builder still does not carry a second copy of the guidance table.
+    assert.doesNotMatch(source, /avoid blaming the user|forced cheerfulness|normal conversational tone/i);
 });
