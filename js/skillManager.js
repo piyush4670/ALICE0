@@ -4,6 +4,10 @@
  * Part 5: skills are validated plugins with an optional manifest that
  * declares name, description, permissions, risk, and error handling.
  * Skills can be individually enabled/disabled by the user.
+ * Part 10.1: routing is confidence-gated — only a declared pattern match can
+ * claim a request; weak keyword-only evidence and equally-ranked (ambiguous)
+ * matches are reported and declined instead of guessed (see the routing
+ * confidence section below).
  */
 import { state } from './state.js';
 import { permissions } from './permissions.js';
@@ -19,6 +23,62 @@ import { vision } from './skills/vision.js';
 import { browserSkill } from './skills/browser.js';
 import { dev } from './skills/dev.js';
 import { iot } from './skills/iot.js';
+
+// ---------------------------------------------------------------------------
+// Part 10.1 — deterministic routing confidence
+//
+// Routing evidence comes in exactly two tiers:
+//
+//   pattern — one of the skill's own declared trigger patterns matched. This
+//             is the skill's explicit contract and the only evidence that can
+//             claim a request.
+//   keyword — only the legacy fallback keyword table matched (0.2 per hit,
+//             capped at 0.9). Keyword evidence is reported in the routing
+//             decision but NEVER claims a request on its own.
+//
+// 0.3 (the historical `matchSkill` threshold) survives only as the confidence
+// floor at which weak keyword evidence becomes *meaningful* — the decision is
+// then reported as `weak`/`ambiguous` instead of `none`. It is no longer
+// sufficient to route.
+// ---------------------------------------------------------------------------
+
+/** Confidence floor for keyword-only evidence (legacy 0.3 threshold). */
+const ROUTING_KEYWORD_FLOOR = 0.3;
+
+/** Tolerance used when comparing two confidence scores for equality. */
+const ROUTING_EPSILON = 1e-9;
+
+/**
+ * Fallback keyword table (Part 10.1: weak evidence — never claims a request
+ * on its own, but it is still reported in the routing decision).
+ */
+const ROUTING_KEYWORDS = {
+    calculator: ['calculate', 'math', 'number', 'add', 'subtract', 'multiply', 'divide', '+', '-', '*', '/', '=', 'percent'],
+    websearch: ['search', 'google', 'find', 'information', 'what is', 'who is', 'where is', 'latest'],
+    notes: ['note', 'write down', 'remember this'],
+    reminders: ['remind', 'reminder', 'task', 'todo', 'alarm'],
+    datetime: ['time', 'date', 'day', 'month', 'year', 'today', 'tomorrow'],
+    files: ['file', 'document', 'read', 'open', 'save'],
+    reader: ['read aloud', 'summarize', 'extract'],
+    memory: ['remember', 'my', 'forget', 'recall'],
+    vision: ['image', 'picture', 'photo', 'screenshot', 'diagram', 'see', 'look at', 'vision'],
+    browser: ['browser', 'website', 'webpage', 'web page', 'open site', 'navigate', 'open url', 'visit'],
+    dev: ['code', 'debug', 'programming', 'script', 'error', 'bug', 'fix', 'function', 'javascript', 'project', 'lint', 'scaffold'],
+    iot: ['light', 'device', 'iot', 'sensor', 'smart home', 'thermostat', 'switch', 'turn on', 'turn off']
+};
+
+/**
+ * Framing/function words. A pattern that consumed only these words
+ * (websearch's `/what is /`) is weaker evidence than one that consumed real
+ * content (the calculator's `10 plus 5`), so specificity counts the complete
+ * non-framing tokens a match consumed.
+ */
+const ROUTING_FRAMING_WORDS = new Set([
+    'a', 'an', 'and', 'are', 'at', 'be', 'by', 'can', 'could', 'did', 'do',
+    'does', 'for', 'from', 'i', 'in', 'is', 'it', 'me', 'my', 'of', 'on',
+    'or', 'please', 'the', 'this', 'that', 'those', 'to', 'was', 'were',
+    'what', 'when', 'where', 'which', 'who', 'why', 'with', 'you', 'your'
+]);
 
 class SkillManager {
     constructor() {
@@ -199,24 +259,27 @@ class SkillManager {
 
     /**
      * Public: find the best matching skill for a piece of text without
-     * executing anything. Used by the task planner to map sub-tasks to tools.
-     * Returns { skill, score } or { skill: null, score: 0 }.
+     * executing anything, or decide that deterministic routing must not
+     * claim the request (Part 10.1). Used by the task planner to map
+     * sub-tasks to tools and by the conversation loop for the single-skill
+     * path.
+     *
+     * The historical fields are preserved:
+     *   skill — the routed skill, or null when the router declines
+     *   score — the strongest evidence score seen (1.0 for a pattern match)
+     *
+     * The decision metadata is additive:
+     *   decision   — 'strong' | 'weak' | 'ambiguous' | 'none'
+     *   routed     — true only for 'strong'
+     *   reason     — human-readable explanation of the decision
+     *   matchedBy  — 'pattern' | 'keyword' | null
+     *   specificity — number of content tokens the winning pattern consumed
+     *   candidates — every skill with evidence: { name, tier, score,
+     *                specificity, span }, deterministically ordered
+     *   contenders — names of the equally-ranked skills when 'ambiguous'
      */
     matchSkill(text) {
-        const t = text.toLowerCase().trim();
-        let bestMatch = null;
-        let bestScore = 0;
-        for (const skill of this.getEnabledSkills()) {
-            const score = this._calculateMatchScore(t, skill);
-            if (score > bestScore) {
-                bestScore = score;
-                bestMatch = skill;
-            }
-        }
-        return {
-            skill: bestScore >= 0.3 ? bestMatch : null,
-            score: bestScore
-        };
+        return this._route(text);
     }
 
     /**
@@ -293,26 +356,222 @@ class SkillManager {
     }
 
     /**
-     * Find the best matching skill for input
+     * Find the best matching skill for input (internal). Returns the routed
+     * skill or null — the confidence gate decides whether routing may claim
+     * the request (Part 10.1).
      */
     _findSkill(text) {
-        let bestMatch = null;
-        let bestScore = 0;
+        return this._route(text).skill;
+    }
 
+    // =======================================================================
+    // Part 10.1 — deterministic routing confidence gate
+    //
+    // Decides WHETHER deterministic routing may claim a request. It never
+    // executes a skill, never logs, never touches skill or app state, and
+    // performs no I/O — evaluation is pure, synchronous and repeatable.
+    //
+    // Decisions:
+    //   strong    — exactly one skill has the most specific pattern match
+    //               (registration order is never used as a tie-break)
+    //   weak      — only keyword evidence exists; the router declines
+    //   ambiguous — two or more skills are equally well supported; the
+    //               router declines instead of guessing
+    //   none      — no meaningful evidence for any enabled skill
+    // =======================================================================
+
+    /**
+     * Evaluate routing evidence and return the routing decision.
+     */
+    _route(text) {
+        const t = typeof text === 'string' ? text.toLowerCase().trim() : '';
+
+        const candidates = [];
         for (const skill of this.getEnabledSkills()) {
-            const score = this._calculateMatchScore(text, skill);
-            if (score > bestScore) {
-                bestScore = score;
-                bestMatch = skill;
-            }
+            const candidate = this._routingCandidate(t, skill);
+            if (candidate) candidates.push(candidate);
         }
 
-        // Only return if score is above threshold
-        return bestScore >= 0.3 ? bestMatch : null;
+        // Deterministic order: strongest evidence first, ties broken by skill
+        // name — never by registration order.
+        candidates.sort((a, b) =>
+            (b.specificity - a.specificity) ||
+            (b.score - a.score) ||
+            (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+        const top = candidates[0];
+        if (!top) {
+            return this._routingDecision(null, 0, 'none',
+                'no skill evidence for this request', null, null, candidates, []);
+        }
+
+        if (top.tier === 'pattern') {
+            const leaders = candidates.filter(c =>
+                c.tier === 'pattern' && c.specificity === top.specificity);
+            if (leaders.length === 1) {
+                return this._routingDecision(top.skill, top.score, 'strong',
+                    `pattern match (specificity ${top.specificity})`,
+                    'pattern', top.specificity, candidates, []);
+            }
+            return this._routingDecision(null, top.score, 'ambiguous',
+                `equally specific pattern matches: ${leaders.map(c => c.name).join(', ')}`,
+                'pattern', top.specificity, candidates, leaders.map(c => c.name));
+        }
+
+        // Keyword-only evidence is weak: it is never enough to claim a request.
+        if (top.score < ROUTING_KEYWORD_FLOOR) {
+            return this._routingDecision(null, top.score, 'none',
+                'keyword evidence below the routing floor', 'keyword', null, candidates, []);
+        }
+        const leaders = candidates.filter(c =>
+            c.tier === 'keyword' && Math.abs(c.score - top.score) <= ROUTING_EPSILON);
+        if (leaders.length === 1) {
+            return this._routingDecision(null, top.score, 'weak',
+                `keyword-only evidence (score ${top.score}) is not decisive`,
+                'keyword', null, candidates, []);
+        }
+        return this._routingDecision(null, top.score, 'ambiguous',
+            `ambiguous weak matches: ${leaders.map(c => c.name).join(', ')}`,
+            'keyword', null, candidates, leaders.map(c => c.name));
     }
 
     /**
-     * Calculate match score for a skill
+     * Evidence for one enabled skill: a declared pattern match (strong) or
+     * the fallback keyword score (weak), or null when the skill has none.
+     */
+    _routingCandidate(text, skill) {
+        const pattern = this._patternEvidence(text, skill);
+        if (pattern) {
+            return {
+                skill,
+                name: skill.name,
+                tier: 'pattern',
+                score: 1.0,
+                specificity: pattern.specificity,
+                span: pattern.span
+            };
+        }
+
+        const score = this._keywordScore(text, skill);
+        if (score > 0) {
+            return { skill, name: skill.name, tier: 'keyword', score, specificity: 0, span: null };
+        }
+        return null;
+    }
+
+    /**
+     * Best pattern evidence for a skill: the match with the greatest
+     * specificity (ties broken by the longer span). RegExp state is left
+     * untouched so repeated evaluation is side-effect free.
+     */
+    _patternEvidence(text, skill) {
+        if (!Array.isArray(skill.patterns)) return null;
+
+        let best = null;
+        for (const pattern of skill.patterns) {
+            if (!pattern || typeof pattern.exec !== 'function') continue;
+
+            const stateful = pattern.global || pattern.sticky;
+            const savedIndex = stateful ? pattern.lastIndex : 0;
+            if (stateful) pattern.lastIndex = 0;
+
+            let match;
+            try {
+                match = pattern.exec(text);
+            } finally {
+                if (stateful) pattern.lastIndex = savedIndex;
+            }
+            if (!match) continue;
+
+            const span = match[0];
+            const start = match.index;
+            const end = start + span.length;
+
+            // A match that lands inside a longer word ("photo" inside
+            // "photosynthesis") is an accident of the regex, not a phrase
+            // match: it is not strong evidence (the skill's keyword score
+            // still reports it as weak evidence).
+            if (!this._isPhraseMatch(text, start, end)) continue;
+
+            const specificity = this._matchSpecificity(span);
+            if (!best || specificity > best.specificity ||
+                (specificity === best.specificity && span.length > best.span.length)) {
+                best = { span, specificity };
+            }
+        }
+        return best;
+    }
+
+    /**
+     * True when a match starts and ends on token boundaries, i.e. it did not
+     * match a fragment of a longer word.
+     */
+    _isPhraseMatch(text, start, end) {
+        const isWordChar = (ch) => ch !== undefined && /[a-z0-9]/i.test(ch);
+        const startsMidWord = isWordChar(text[start]) && isWordChar(text[start - 1]);
+        const endsMidWord = isWordChar(text[end - 1]) && isWordChar(text[end]);
+        return !startsMidWord && !endsMidWord;
+    }
+
+    /**
+     * Specificity of a phrase match: how many complete, non-framing tokens
+     * the match consumed ("10 plus 5" => 3, "what is " => 0). A phrase match
+     * that consumed only framing words is weaker evidence than one that
+     * consumed real content, which is what separates the calculator's
+     * `/10 plus 5/` from websearch's `/what is /` on the same request.
+     */
+    _matchSpecificity(span) {
+        let specificity = 0;
+        for (const token of span.toLowerCase().split(/[^a-z0-9$]+/)) {
+            if (!token) continue;
+            if (ROUTING_FRAMING_WORDS.has(token)) continue;
+            specificity += 1;
+        }
+        return specificity;
+    }
+
+    /**
+     * Assemble the routing decision. `candidates` is exposed as plain data
+     * (no skill objects) so the decision can be asserted and logged directly.
+     */
+    _routingDecision(skill, score, decision, reason, matchedBy, specificity, candidates, contenders) {
+        return {
+            skill: skill || null,
+            score,
+            decision,
+            routed: decision === 'strong',
+            reason,
+            matchedBy,
+            specificity,
+            candidates: candidates.map(c => ({
+                name: c.name,
+                tier: c.tier,
+                score: c.score,
+                specificity: c.specificity,
+                span: c.span
+            })),
+            contenders
+        };
+    }
+
+    /**
+     * Weak fallback evidence: the legacy keyword table (0.2 per hit, capped
+     * at 0.9). Reported by the confidence gate, never enough to route.
+     */
+    _keywordScore(text, skill) {
+        const keywords = ROUTING_KEYWORDS[skill.name] || [];
+        let score = 0;
+        for (const keyword of keywords) {
+            if (text.includes(keyword)) {
+                score += 0.2;
+            }
+        }
+        return Math.min(score, 0.9);
+    }
+
+    /**
+     * Calculate match score for a skill (unchanged public score contract):
+     * a declared pattern match scores 1.0, otherwise the weak keyword score.
      */
     _calculateMatchScore(text, skill) {
         // Check patterns
@@ -322,32 +581,8 @@ class SkillManager {
             }
         }
 
-        // Check for skill-specific keywords
-        const keywords = {
-            calculator: ['calculate', 'math', 'number', 'add', 'subtract', 'multiply', 'divide', '+', '-', '*', '/', '=', 'percent'],
-            websearch: ['search', 'google', 'find', 'information', 'what is', 'who is', 'where is', 'latest'],
-            notes: ['note', 'write down', 'remember this'],
-            reminders: ['remind', 'reminder', 'task', 'todo', 'alarm'],
-            datetime: ['time', 'date', 'day', 'month', 'year', 'today', 'tomorrow'],
-            files: ['file', 'document', 'read', 'open', 'save'],
-            reader: ['read aloud', 'summarize', 'extract'],
-            memory: ['remember', 'my', 'forget', 'recall'],
-            vision: ['image', 'picture', 'photo', 'screenshot', 'diagram', 'see', 'look at', 'vision'],
-            browser: ['browser', 'website', 'webpage', 'web page', 'open site', 'navigate', 'open url', 'visit'],
-            dev: ['code', 'debug', 'programming', 'script', 'error', 'bug', 'fix', 'function', 'javascript', 'project', 'lint', 'scaffold'],
-            iot: ['light', 'device', 'iot', 'sensor', 'smart home', 'thermostat', 'switch', 'turn on', 'turn off']
-        };
-
-        const skillKeywords = keywords[skill.name] || [];
-        let score = 0;
-        
-        for (const keyword of skillKeywords) {
-            if (text.includes(keyword)) {
-                score += 0.2;
-            }
-        }
-
-        return Math.min(score, 0.9);
+        // Check for skill-specific keywords (weak evidence — Part 10.1)
+        return this._keywordScore(text, skill);
     }
 
     /**
@@ -408,3 +643,8 @@ class SkillManager {
 
 // Singleton instance
 export const skillManager = new SkillManager();
+
+// The class is exported (in addition to the singleton) so tests can build
+// managers with a different registration order and prove that routing
+// decisions are independent of it (Part 10.1).
+export { SkillManager };
