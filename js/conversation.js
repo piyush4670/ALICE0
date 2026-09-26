@@ -768,7 +768,10 @@ class ConversationManager {
      */
     async _synthesizeFinalResponse(request, agentResult, context) {
         try {
-            const synthesized = await aiBrain.generateResponse(request, agentResult, context || null);
+            // Keep the factual completion report, not the Agent's internal
+            // step blackboard, alongside the already-supplied planning context.
+            const executionResult = { response: agentResult.response, success: agentResult.success };
+            const synthesized = await aiBrain.generateResponse(request, executionResult, context || null);
             if (typeof synthesized === 'string' && synthesized.trim().length > 0) {
                 return synthesized;
             }

@@ -173,6 +173,7 @@ async function runRequest(request, {
     const brainCalls = [];
     const synthesisCalls = [];
     const builtContexts = [];
+    const agentResults = [];
     const spoken = [];
     const restore = [
         observe(aiBrain, 'processRequest', (args, value) => brainCalls.push({ args, value })),
@@ -182,6 +183,7 @@ async function runRequest(request, {
     ];
     const originalExecutePlan = agent.executePlan;
     if (agentOverride) agent.executePlan = agentOverride;
+    restore.push(observe(agent, 'executePlan', (args, value) => agentResults.push(value)));
     aiBrain.setAdapter(adapter);
     conversation.clearHistory();
     state.clearConversation();
@@ -197,12 +199,13 @@ async function runRequest(request, {
             spoken,
             brainCalls,
             synthesisCalls,
-            builtContexts
+            builtContexts,
+            agentResults
         };
     } finally {
-        if (agentOverride) agent.executePlan = originalExecutePlan;
         aiBrain.setAdapter(previousAdapter);
         for (const undo of restore.reverse()) undo();
+        if (agentOverride) agent.executePlan = originalExecutePlan;
     }
 }
 
@@ -248,15 +251,17 @@ test('B. a completed multi-step plan is synthesized exactly once with the planni
     assert.equal(adapter.calls[0].options.responseFormat, 'plan');
     assert.equal(adapter.calls[1].options.responseFormat, 'text');
 
-    // The synthesis received the original request, the Agent execution result
-    // and the SAME context the planning step built.
+    // The synthesis received the original request, the Agent's factual
+    // completion report (not its entire blackboard), and the SAME planning context.
     assert.equal(run.synthesisCalls.length, 1, 'final synthesis must run exactly once');
     const [synthRequest, synthExecution, synthContext] = run.synthesisCalls[0].args;
     assert.equal(synthRequest, request, 'the original user request must be passed through');
-    assert.equal(synthExecution.success, true);
-    assert.match(String(synthExecution.response), /200/, 'the Agent execution result must be passed through');
-    // The untouched Agent result object is handed over: no wrapper, no copy.
-    assert.deepEqual(Object.keys(synthExecution).sort(), ['context', 'response', 'success']);
+    assert.deepEqual(synthExecution, { response: run.agentResults[0].response, success: true });
+    assert.match(synthExecution.response, /25% of 800 = 200/, 'the actual calculator result must reach synthesis');
+    assert.notStrictEqual(synthExecution, run.agentResults[0], 'do not mutate the Agent result');
+    assert.deepEqual(Object.keys(run.agentResults[0]).sort(), ['context', 'response', 'success']);
+    assert.match(run.agentResults[0].context.step_1.result, /25% of 800 = 200/);
+    assert.equal('context' in synthExecution, false, 'never duplicate the Agent blackboard in the payload');
 
     // AIBrain retained the context it built, and ConversationManager handed
     // that exact object back — no rebuild, no second context.
@@ -266,21 +271,48 @@ test('B. a completed multi-step plan is synthesized exactly once with the planni
     assert.equal(run.builtContexts.length, 1, 'the ContextBuilder must build exactly one context');
     assert.strictEqual(run.builtContexts[0].value, synthContext);
 
-    // The synthesis prompt embeds the planning prompt verbatim (same context,
-    // read-only) and then adds the request + execution result.
+    // The two prompts reuse the same contextual sections verbatim, but have
+    // distinct output contracts and system instructions. The final result is
+    // serialized only once, without a second context object inside it.
     const planningPrompt = adapter.calls[0].prompt;
     const synthesisPrompt = adapter.calls[1].prompt;
-    assert.ok(
-        synthesisPrompt.startsWith(planningPrompt),
-        'the synthesized prompt must reuse the exact planning context'
+    assert.equal(planningPrompt, contextBuilder.formatForPrompt(synthContext));
+    assert.ok(synthesisPrompt.startsWith(contextBuilder.formatForPrompt(synthContext, {
+        responseContract: 'presentation'
+    })));
+    assert.equal(
+        synthesisPrompt.slice(synthesisPrompt.indexOf('ALICE Identity:'),
+            synthesisPrompt.indexOf('Final Presentation-Only Response Contract:')),
+        planningPrompt.slice(planningPrompt.indexOf('ALICE Identity:'),
+            planningPrompt.indexOf('Required JSON Output Contract')),
+        'identity, interaction, guidance, and priority sections must be identical'
     );
     assert.ok(synthesisPrompt.includes(`User Request: "${request}"`));
-    assert.ok(synthesisPrompt.includes('Execution Result: '));
-    assert.ok(
-        synthesisPrompt.includes(JSON.stringify(synthExecution)),
-        'the execution result must reach the model verbatim'
-    );
+    assert.ok(synthesisPrompt.includes(`Execution Result: ${JSON.stringify(synthExecution)}`));
+    assert.doesNotMatch(synthesisPrompt, /"context":/);
+    assert.match(planningPrompt, /Required JSON Output Contract.*?\n1\. Return ONLY one JSON object/s);
+    assert.doesNotMatch(synthesisPrompt, /Required JSON Output Contract|Return ONLY one JSON object/);
     assert.ok(synthesisPrompt.length <= CONFIG.ai.gateway.maxPromptChars);
+});
+
+test('B. a frozen Agent result is not mutated or serialized with its context', async () => {
+    const agentResult = Object.freeze({
+        response: '25% of 800 = 200.',
+        success: true,
+        context: Object.freeze({ duplicatedContextMarker: 'DO_NOT_SERIALIZE_THIS_CONTEXT' })
+    });
+    const adapter = new ScriptedAdapter({ plan: CALC_PLAN });
+    const run = await runRequest(CALC_REQUEST, {
+        adapter,
+        agentOverride: async () => agentResult
+    });
+
+    assert.strictEqual(run.agentResults[0], agentResult);
+    assert.deepEqual(run.synthesisCalls[0].args[1], { response: agentResult.response, success: true });
+    assert.strictEqual(run.synthesisCalls[0].args[2], run.builtContexts[0].value);
+    assert.match(adapter.calls[1].prompt, /25% of 800 = 200/);
+    assert.doesNotMatch(adapter.calls[1].prompt, /DO_NOT_SERIALIZE_THIS_CONTEXT|"context":/);
+    assert.equal(agentResult.context.duplicatedContextMarker, 'DO_NOT_SERIALIZE_THIS_CONTEXT');
 });
 
 test('C. the synthesis prompt carries identity, interaction metadata, guidance and the priority contract', async () => {
@@ -328,18 +360,17 @@ test('C. the synthesis prompt carries identity, interaction metadata, guidance a
     assert.ok(prompt.includes(`- Expressed signal: ${guidance.signal}`));
     assert.ok(prompt.includes(`- Communication tone: ${guidance.tone}`));
 
-    // Response priority contract + output contract + tools context
+    // Response priority contract + presentation-only contract + tools context
     assert.match(prompt, /Response Priority Contract:/);
     assert.ok(prompt.includes("The user's request is the primary task and must be answered or handled first."));
-    assert.match(prompt, /Required JSON Output Contract/);
+    assert.match(prompt, /Final Presentation-Only Response Contract:/);
+    assert.match(prompt, /Do not generate a plan, JSON, or tool calls\. Do not execute anything\./);
+    assert.doesNotMatch(prompt, /Required JSON Output Contract|Return ONLY one JSON object/);
     assert.match(prompt, /Available Tools:/);
 
     // The request stays authoritative in the synthesis instruction itself.
     assert.match(prompt, /The user's request is the primary task: answer it exactly as asked\./);
-    assert.ok(synthRequest === request);
-
-    // The planning prompt and the synthesis context block are identical.
-    assert.ok(adapter.calls[1].prompt.startsWith(adapter.calls[0].prompt));
+    assert.equal(synthRequest, request);
     assert.equal(fetchCalls, before);
 });
 
@@ -372,7 +403,8 @@ test('C. no detector is re-run and no second interaction context is created', as
         'there must still be exactly one AI Brain request call');
     assert.equal(code.match(/aiBrain\.generateResponse\s*\(/g).length, 1,
         'there must be exactly one final synthesis call, in the helper');
-    assert.match(code, /generateResponse\(request,\s*agentResult,\s*context\s*\|\|\s*null\)/);
+    assert.match(code, /const executionResult = \{\s*response: agentResult\.response,\s*success: agentResult\.success\s*\}/);
+    assert.match(code, /generateResponse\(request,\s*executionResult,\s*context\s*\|\|\s*null\)/);
     assert.match(code, /this\._synthesizeFinalResponse\(text,\s*agentResult,\s*aiResult\.context\)/);
     // No detector is invoked inside the synthesis helper.
     const helper = code.slice(code.indexOf('_synthesizeFinalResponse('), code.indexOf('_generateBasicResponse'));

@@ -455,17 +455,16 @@ export class AIBrain {
      *   - when no context is supplied, a minimal context is built from the
      *     request through that same ContextBuilder, so the established prompt
      *     sections (ALICE Identity, Interaction Context, Emotional Response
-     *     Guidance, Response Priority Contract, Required JSON Output Contract,
-     *     tools/memory/history/task state) exist either way.
+     *     Guidance, Response Priority Contract, presentation-only response
+     *     contract, tools/memory/history/task state) exist either way.
      *
      * AIBrain still detects, infers, and normalizes nothing: the caller-supplied
      * `options.interactionContext` is only forwarded, and ContextBuilder remains
      * the single normalization boundary.
      *
-     * Response-generation contract is unchanged: this step asks for
-     * `responseFormat: 'text'` and a single user-facing natural-language reply
-     * (no JSON envelope, no plan, no internal reasoning). The structured
-     * planning contract in generatePlan() is untouched.
+     * This step asks for `responseFormat: 'text'` and a single user-facing
+     * natural-language reply (no JSON envelope, plan, tool calls, or execution).
+     * The structured JSON planning contract in generatePlan() is untouched.
      *
      * @param {string} request - The user's original request (authoritative)
      * @param {Object} executionResult - Factual result produced by ALICE's tools
@@ -485,9 +484,11 @@ export class AIBrain {
             interactionContext: options.interactionContext
         });
 
-        // Format through the existing ContextBuilder so every established
-        // context section is preserved verbatim.
-        const formattedContext = this._contextBuilder.formatForPrompt(fullContext);
+        // Reuse the same ContextBuilder context, but never inherit its JSON
+        // planning instructions as the final response's output contract.
+        const formattedContext = this._contextBuilder.formatForPrompt(fullContext, {
+            responseContract: 'presentation'
+        });
 
         // The user's request stays authoritative; the execution result is
         // factual task data. This step returns natural language only.

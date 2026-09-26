@@ -76,8 +76,8 @@ function createRecordingContextBuilder({ onBuild } = {}) {
             if (onBuild) return onBuild(options);
             return { request: options.request, tools: [], interactionContext: options.interactionContext };
         },
-        formatForPrompt(context) {
-            formatCalls.push(context);
+        formatForPrompt(context, options) {
+            formatCalls.push({ context, options });
             return `FORMATTED CONTEXT(${context?.request ?? ''})`;
         }
     };
@@ -95,9 +95,9 @@ function createSpyContextBuilder(inner = realContextBuilder) {
             buildCalls.push({ options, value });
             return value;
         },
-        formatForPrompt(context) {
-            const value = inner.formatForPrompt(context);
-            formatCalls.push({ context, value });
+        formatForPrompt(context, options) {
+            const value = inner.formatForPrompt(context, options);
+            formatCalls.push({ context, options, value });
             return value;
         }
     };
@@ -186,12 +186,13 @@ test('a supplied context reaches the synthesis prompt verbatim and is never rebu
     assert.equal(contextBuilderStub.buildCalls.length, 0, 'a supplied context must never be rebuilt');
     assert.equal(contextBuilderStub.formatCalls.length, 1, 'the context must be formatted exactly once');
     // Same reference and same values: the supplied context is used, not copied.
-    assert.strictEqual(contextBuilderStub.formatCalls[0], suppliedContext);
+    assert.strictEqual(contextBuilderStub.formatCalls[0].context, suppliedContext);
+    assert.deepEqual(contextBuilderStub.formatCalls[0].options, { responseContract: 'presentation' });
     assert.deepEqual(suppliedContext, snapshot, 'the supplied context must not be mutated');
     // And the formatted context is what the model actually receives.
     assert.match(adapter.generateCalls[0].prompt, /FORMATTED CONTEXT\(/);
     assert.ok(
-        adapter.generateCalls[0].prompt.includes(contextBuilderStub.formatCalls[0].request),
+        adapter.generateCalls[0].prompt.includes(contextBuilderStub.formatCalls[0].context.request),
         'the formatted context must be embedded in the synthesis prompt'
     );
 });
@@ -239,6 +240,7 @@ test('every established context section reaches the synthesis prompt', async () 
     // or dropped in between).
     assert.equal(contextBuilderSpy.formatCalls.length, 1);
     assert.strictEqual(contextBuilderSpy.formatCalls[0].context, context);
+    assert.deepEqual(contextBuilderSpy.formatCalls[0].options, { responseContract: 'presentation' });
     assert.ok(
         prompt.startsWith(contextBuilderSpy.formatCalls[0].value),
         'the formatted ALICE context must be included verbatim'
@@ -272,9 +274,10 @@ test('every established context section reaches the synthesis prompt', async () 
     assert.ok(prompt.includes("The user's request is the primary task and must be answered or handled first."));
     assert.ok(prompt.includes("Emotional guidance must never replace, reinterpret, or override the user's actual request."));
 
-    // Required JSON Output Contract
-    assert.match(prompt, /Required JSON Output Contract/);
-    assert.ok(prompt.includes('{"response": "your natural-language answer"}'));
+    // Final synthesis has its own contract, never the planning JSON contract.
+    assert.match(prompt, /Final Presentation-Only Response Contract/);
+    assert.doesNotMatch(prompt, /Required JSON Output Contract|Return ONLY one JSON object/);
+    assert.doesNotMatch(prompt, /\{"response":|\{"goal":/);
 
     // Tools / memory / history context (task state travels on the same context)
     assert.match(prompt, /Available Tools:/);
@@ -290,7 +293,7 @@ test('every established context section reaches the synthesis prompt', async () 
         'Interaction Context:',
         'Emotional Response Guidance:',
         'Response Priority Contract:',
-        'Required JSON Output Contract',
+        'Final Presentation-Only Response Contract:',
         'User Request:'
     ];
     let previous = -1;
@@ -299,6 +302,31 @@ test('every established context section reaches the synthesis prompt', async () 
         assert.ok(position > previous, `${heading} missing or out of order in the synthesis prompt`);
         previous = position;
     }
+});
+
+test('generatePlan keeps the default JSON planning contract, byte-for-byte', async () => {
+    const contextBuilderSpy = createSpyContextBuilder();
+    const adapter = new RecordingAdapter();
+    adapter.nextResult = { structured: { response: 'Planning direct answer.' } };
+    const brain = new AIBrain({ adapter, contextBuilder: contextBuilderSpy });
+    const context = buildRichRealContext();
+    const originalPlanningPrompt = realContextBuilder.formatForPrompt(context);
+
+    const result = await brain.generatePlan(EXAMPLE_REQUEST, context);
+
+    assert.equal(result.response, 'Planning direct answer.');
+    assert.equal(contextBuilderSpy.buildCalls.length, 0);
+    assert.equal(contextBuilderSpy.formatCalls.length, 1);
+    assert.strictEqual(contextBuilderSpy.formatCalls[0].context, context);
+    assert.equal(contextBuilderSpy.formatCalls[0].options, undefined,
+        'generatePlan must keep the original default formatting call');
+    assert.equal(adapter.generateCalls[0].options.responseFormat, 'plan');
+    assert.equal(adapter.generateCalls[0].prompt, originalPlanningPrompt);
+    assert.equal(realContextBuilder.formatForPrompt(context, { responseContract: 'planning' }), originalPlanningPrompt);
+    assert.match(originalPlanningPrompt, /Required JSON Output Contract — your entire reply is machine-parsed/);
+    assert.match(originalPlanningPrompt, /Return ONLY one JSON object/);
+    assert.match(originalPlanningPrompt, /\{"response": "your natural-language answer"\}/);
+    assert.match(originalPlanningPrompt, /\{"goal": "overall user goal"/);
 });
 
 // ---------------------------------------------------------------------------
@@ -335,6 +363,48 @@ test('the original user request and the execution result both reach the synthesi
         prompt.length <= CONFIG.ai.gateway.maxPromptChars,
         `synthesis prompt is ${prompt.length} chars; limit is ${CONFIG.ai.gateway.maxPromptChars}`
     );
+});
+
+test('realistic bounded tools, history, and memory fit the final text prompt', async () => {
+    const adapter = new RecordingAdapter();
+    const brain = new AIBrain({ adapter, contextBuilder: realContextBuilder });
+    const pinned = [];
+    const keys = [];
+    state.clearConversation();
+    try {
+        for (let i = 0; i < 9; i++) {
+            state.addToConversation(i % 2 ? 'assistant' : 'user',
+                `Research discussion turn ${i + 1}: ` +
+                'We reviewed the quantum computing project, its sources, and the results to summarize. '.repeat(3));
+        }
+        for (let i = 0; i < 3; i++) {
+            pinned.push(memory.pinFact(`Research preference ${i + 1}: use concise factual summaries.`));
+            const key = `quantum computing research fact ${i + 1}`;
+            keys.push(key);
+            memory.remember(key, `Verified source ${i + 1} for the project summary.`);
+        }
+
+        const context = realContextBuilder.buildContext({ request: EXAMPLE_REQUEST });
+        assert.ok(context.tools.length >= 10, 'use actual registered tool descriptors');
+        assert.equal(context.history.length, 6, 'ContextBuilder bounds conversation history');
+        assert.equal(context.memory.pinnedFacts.length, 3);
+        assert.equal(context.memory.memories.length, 3);
+        await brain.generateResponse(EXAMPLE_REQUEST,
+            { response: EXAMPLE_EXECUTION_RESULT.response, success: true }, context);
+
+        const prompt = adapter.generateCalls[0].prompt;
+        assert.match(prompt, /Available Tools:/);
+        assert.match(prompt, /Conversation History:/);
+        assert.match(prompt, /Context & Memory:/);
+        assert.match(prompt, /Verified source 3 for the project summary/);
+        assert.match(prompt, /Execution Result: \{"response":"Quantum computing uses qubits and superposition\.\",\"success\":true\}/);
+        assert.ok(prompt.length <= CONFIG.ai.gateway.maxPromptChars,
+            `final prompt is ${prompt.length} chars; limit is ${CONFIG.ai.gateway.maxPromptChars}`);
+    } finally {
+        state.clearConversation();
+        for (const fact of pinned) memory.unpinFact(fact.id);
+        for (const key of keys) memory.forget(key);
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -438,9 +508,9 @@ test('a supplied context is never overwritten by options.interactionContext', as
 // 6) Response-generation contract: natural language only, no hidden reasoning
 // ---------------------------------------------------------------------------
 
-test('the synthesis step still asks for the final natural-language response only', async () => {
+test('the synthesis step has a presentation-only text contract, not the planning JSON contract', async () => {
     const adapter = new RecordingAdapter();
-    const brain = new AIBrain({ adapter, contextBuilder: createRecordingContextBuilder() });
+    const brain = new AIBrain({ adapter, contextBuilder: realContextBuilder });
     const context = realContextBuilder.buildContext({
         request: EXAMPLE_REQUEST,
         interactionContext: createInteractionContext(EXAMPLE_INTERACTION_CONTEXT)
@@ -453,12 +523,17 @@ test('the synthesis step still asks for the final natural-language response only
     assert.equal(adapter.generateCalls[0].options.responseFormat, 'text');
 
     const prompt = adapter.generateCalls[0].prompt;
+    assert.match(prompt, /Final Presentation-Only Response Contract:/);
+    assert.match(prompt, /The task has already been executed/);
+    assert.match(prompt, /Do not generate a plan, JSON, or tool calls\. Do not execute anything\./);
+    assert.match(prompt, /Return only the natural-language user-facing answer/);
+    assert.match(prompt, /original user request remains authoritative; the execution result is factual task output/i);
+    assert.match(prompt, /ALICE Identity, Interaction Context, and Emotional Response Guidance influence communication style only/);
     assert.match(prompt, /Reply with the final user-facing natural-language response only/);
     assert.match(prompt, /no JSON, no plan, no Markdown code fences/);
     assert.match(prompt, /no internal reasoning or process narration/);
-    // The structured planning contract stays intact inside the context; this
-    // step does not ask the model for a plan object of its own.
-    assert.ok(!/synthes[^\n]*\{"goal"/i.test(prompt), 'synthesis must not request a plan object');
+    assert.doesNotMatch(prompt, /Required JSON Output Contract|Return ONLY one JSON object/);
+    assert.doesNotMatch(prompt, /\{"response":|\{"goal":/);
 });
 
 // ---------------------------------------------------------------------------
@@ -587,7 +662,7 @@ test('AIBrain still owns no detector, guidance, or identity logic of its own', a
             `AIBrain must not import ${forbidden}`);
     }
     // The final synthesis path delegates formatting to the ContextBuilder.
-    assert.match(source, /this\._contextBuilder\.formatForPrompt\(fullContext\)/);
+    assert.match(source, /this\._contextBuilder\.formatForPrompt\(fullContext,\s*\{\s*responseContract: 'presentation'\s*\}\)/);
     assert.match(source, /this\._contextBuilder\.buildContext\(\{/);
     // interactionContext is prompt metadata, not an adapter option.
     assert.match(source, /const \{ interactionContext: _interactionContext, \.\.\.adapterOptions \} = options;/);
