@@ -218,14 +218,30 @@ class TaskPlanner {
 
         const steps = [];
         for (const part of parts) {
-            const match = skillManager.matchSkill(part);
-            if (!match || !match.skill) continue;
+            // Part 10.2: separate candidate discovery from claim permission.
+            // If candidate discovery finds no meaningful evidence at all
+            // (none / below floor), drop the clause so phantom steps are
+            // not created.
+            const candidateInfo = skillManager._findBestCandidate(part);
+            if (!candidateInfo || candidateInfo.decision === 'none') continue;
 
+            // Claim policy decides execution authorization:
+            // Only strong, unambiguous pattern matches may claim.
+            const claim = skillManager.matchSkill(part);
+            const isClaimed = Boolean(claim && claim.claimed && claim.skill);
             const risk = this._has(part, 'delete') ? 'sensitive' : 'safe';
+
             steps.push({
                 id: `step_${steps.length + 1}`,
                 label: part,
-                skill: match.skill.name,
+                // Explicit semantic boundary: only a skill authorized by the
+                // claim policy can be bound for automatic execution. Weak or
+                // ambiguous candidates leave `skill: null`.
+                skill: isClaimed ? claim.skill.name : null,
+                candidate: candidateInfo.candidate ? candidateInfo.candidate.name : null,
+                claimed: isClaimed,
+                decision: candidateInfo.decision,
+                contenders: candidateInfo.contenders || [],
                 operation: null,
                 action: part,
                 input: part,
