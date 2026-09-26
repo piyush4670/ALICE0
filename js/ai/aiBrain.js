@@ -250,7 +250,11 @@ export class AIBrain {
      *     to adapter.generate(); ContextBuilder fields (historyLimit,
      *     memoryLimit, includeTools, includeMemory, includeHistory,
      *     includeTaskState) keep working as before.
-     * @returns {Promise<Object>} Processed result or fallback indicator
+     * @returns {Promise<Object>} Processed result or fallback indicator. A
+     *     validated multi-step result additionally carries `context`: the
+     *     already-built ContextBuilder context for this request (returned
+     *     as-is, never rebuilt or mutated), so the caller can hand the SAME
+     *     context to generateResponse() after the Agent executes the plan.
      */
     async processRequest(request, options = {}) {
         const text = String(request || '').trim();
@@ -312,6 +316,12 @@ export class AIBrain {
                     isMultiStep: true,
                     goal: text,
                     plan: validation.normalizedPlan,
+                    // Part 9B: the ContextBuilder context that produced this
+                    // plan is retained on the result — the same object, never
+                    // rebuilt and never mutated — so the post-execution final
+                    // synthesis can reuse it instead of building a second,
+                    // independent context.
+                    context,
                     raw: generation.raw
                 };
             }
@@ -435,21 +445,88 @@ export class AIBrain {
 
     /**
      * Synthesize a natural-language response given user request, execution results, and context.
-     * @param {string} request
-     * @param {Object} executionResult
-     * @param {Object} [context]
+     *
+     * Part 9B — context-aware final response synthesis.
+     *
+     * The final synthesis step now receives the same ALICE context the planning
+     * step used:
+     *   - a supplied `context` is formatted exactly as-is through the existing
+     *     ContextBuilder — it is never rebuilt and never mutated;
+     *   - when no context is supplied, a minimal context is built from the
+     *     request through that same ContextBuilder, so the established prompt
+     *     sections (ALICE Identity, Interaction Context, Emotional Response
+     *     Guidance, Response Priority Contract, tools/memory/history/task
+     *     state) exist either way.
+     *
+     * The context is rendered with ContextBuilder's presentation-only output
+     * contract (`outputContract: 'synthesis'`): the planning JSON contract is
+     * not rendered in this step at all, so no machine-parsed planning
+     * instruction is ever active while a natural-language answer is requested.
+     * The planning prompt built by generatePlan() is unchanged.
+     *
+     * AIBrain still detects, infers, and normalizes nothing: the caller-supplied
+     * `options.interactionContext` is only forwarded, and ContextBuilder remains
+     * the single normalization boundary.
+     *
+     * This step asks for `responseFormat: 'text'` and a single user-facing
+     * natural-language reply (no JSON envelope, no plan, no internal
+     * reasoning). The structured planning contract in generatePlan() is
+     * untouched.
+     *
+     * @param {string} request - The user's original request (authoritative)
+     * @param {Object} executionResult - Factual execution result produced for
+     *     that request. Presentation data only: callers should pass the
+     *     factual outcome, not a result object carrying the planning context.
+     * @param {Object} [context] - Already-built context (used as-is if given)
      * @param {Object} [options]
+     * @param {Object} [options.interactionContext] - Explicit interaction
+     *     metadata (Part 4): forwarded unchanged when building a context, and
+     *     never forwarded to the model adapter.
      * @returns {Promise<string>}
      */
     async generateResponse(request, executionResult, context = null, options = {}) {
-        const prompt = `User Request: "${request}"\nExecution Result: ${JSON.stringify(executionResult)}\nSynthesize a clear, friendly, and concise response.`;
+        // Preserve an already-built context untouched; otherwise build a
+        // minimal one from the request (same pass-through rule as
+        // generatePlan — ContextBuilder normalizes, AIBrain does not).
+        const fullContext = context || this._contextBuilder.buildContext({
+            request,
+            interactionContext: options.interactionContext
+        });
+
+        // Format through the existing ContextBuilder so every established
+        // context section is preserved verbatim — but under the presentation
+        // contract, never the machine-parsed planning contract.
+        const formattedContext = this._contextBuilder.formatForPrompt(
+            fullContext,
+            { outputContract: 'synthesis' }
+        );
+
+        // The user's request stays authoritative; the execution result is
+        // factual task data. This step returns natural language only.
+        const prompt = [
+            formattedContext,
+            'Final Response Synthesis (this step only):\n' +
+            "- The user's request is the primary task: answer it exactly as asked.\n" +
+            '- The ALICE context above informs awareness and communication style only.\n' +
+            '- The Execution Result is factual output produced for that request: report it accurately and never let it replace or reinterpret the request.\n' +
+            '- Reply with the final user-facing natural-language response only: no JSON, no plan, no Markdown code fences, and no internal reasoning or process narration.',
+            `User Request: "${request}"`,
+            `Execution Result: ${JSON.stringify(executionResult)}`
+        ].join('\n\n');
+
+        // `interactionContext` is prompt-context metadata consumed by
+        // ContextBuilder — it is not a model-adapter control — so it is the one
+        // option deliberately kept out of the adapter call. Every other option
+        // (timeout, signal, adapter-specific keys) flows through unchanged,
+        // preserving the existing adapter-options contract.
+        const { interactionContext: _interactionContext, ...adapterOptions } = options;
 
         try {
             const result = await this._adapter.generate(prompt, {
                 responseFormat: 'text',
                 timeout: options.timeout || CONFIG.ai?.timeout || 5000,
                 signal: options.signal || null,
-                ...options
+                ...adapterOptions
             });
 
             return result.text || 'Task completed successfully.';
