@@ -758,6 +758,12 @@ class ConversationManager {
      * bypasses no validation, cannot alter the executed plan, and grants no
      * authority.
      *
+     * Only the factual outcome of the completed task is handed to synthesis:
+     * the Agent's internal blackboard (`agentResult.context`) is deliberately
+     * excluded, so the planning context is never duplicated inside the
+     * serialized execution data. The Agent result object itself is never
+     * mutated.
+     *
      * If synthesis fails or yields no text, the Agent's own completion
      * response is returned unchanged so the user never gets an empty answer.
      *
@@ -767,8 +773,17 @@ class ConversationManager {
      * @returns {Promise<string>} The final user-facing response
      */
     async _synthesizeFinalResponse(request, agentResult, context) {
+        // Minimal presentation payload: the task's factual outcome only
+        // (skill-produced facts live in the Agent's user-facing completion
+        // text). Never the raw Agent result — its `context` blackboard is
+        // internal execution data and would duplicate prompt context.
+        const executionResult = {
+            success: agentResult.success === true,
+            response: agentResult.response
+        };
+
         try {
-            const synthesized = await aiBrain.generateResponse(request, agentResult, context || null);
+            const synthesized = await aiBrain.generateResponse(request, executionResult, context || null);
             if (typeof synthesized === 'string' && synthesized.trim().length > 0) {
                 return synthesized;
             }

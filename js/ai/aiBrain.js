@@ -455,20 +455,28 @@ export class AIBrain {
      *   - when no context is supplied, a minimal context is built from the
      *     request through that same ContextBuilder, so the established prompt
      *     sections (ALICE Identity, Interaction Context, Emotional Response
-     *     Guidance, Response Priority Contract, Required JSON Output Contract,
-     *     tools/memory/history/task state) exist either way.
+     *     Guidance, Response Priority Contract, tools/memory/history/task
+     *     state) exist either way.
+     *
+     * The context is rendered with ContextBuilder's presentation-only output
+     * contract (`outputContract: 'synthesis'`): the planning JSON contract is
+     * not rendered in this step at all, so no machine-parsed planning
+     * instruction is ever active while a natural-language answer is requested.
+     * The planning prompt built by generatePlan() is unchanged.
      *
      * AIBrain still detects, infers, and normalizes nothing: the caller-supplied
      * `options.interactionContext` is only forwarded, and ContextBuilder remains
      * the single normalization boundary.
      *
-     * Response-generation contract is unchanged: this step asks for
-     * `responseFormat: 'text'` and a single user-facing natural-language reply
-     * (no JSON envelope, no plan, no internal reasoning). The structured
-     * planning contract in generatePlan() is untouched.
+     * This step asks for `responseFormat: 'text'` and a single user-facing
+     * natural-language reply (no JSON envelope, no plan, no internal
+     * reasoning). The structured planning contract in generatePlan() is
+     * untouched.
      *
      * @param {string} request - The user's original request (authoritative)
-     * @param {Object} executionResult - Factual result produced by ALICE's tools
+     * @param {Object} executionResult - Factual execution result produced for
+     *     that request. Presentation data only: callers should pass the
+     *     factual outcome, not a result object carrying the planning context.
      * @param {Object} [context] - Already-built context (used as-is if given)
      * @param {Object} [options]
      * @param {Object} [options.interactionContext] - Explicit interaction
@@ -486,8 +494,12 @@ export class AIBrain {
         });
 
         // Format through the existing ContextBuilder so every established
-        // context section is preserved verbatim.
-        const formattedContext = this._contextBuilder.formatForPrompt(fullContext);
+        // context section is preserved verbatim — but under the presentation
+        // contract, never the machine-parsed planning contract.
+        const formattedContext = this._contextBuilder.formatForPrompt(
+            fullContext,
+            { outputContract: 'synthesis' }
+        );
 
         // The user's request stays authoritative; the execution result is
         // factual task data. This step returns natural language only.

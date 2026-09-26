@@ -167,25 +167,29 @@ const CALC_PLAN = {
 async function runRequest(request, {
     adapter = new ScriptedAdapter({ directResponse: 'Direct answer.' }),
     agentOverride = null,
-    callCommand = false
+    callCommand = false,
+    prepare = null
 } = {}) {
     const previousAdapter = aiBrain.getAdapter();
     const brainCalls = [];
     const synthesisCalls = [];
     const builtContexts = [];
     const spoken = [];
+    const agentResults = [];
+    const originalExecutePlan = agent.executePlan;
+    if (agentOverride) agent.executePlan = agentOverride;
     const restore = [
         observe(aiBrain, 'processRequest', (args, value) => brainCalls.push({ args, value })),
         observe(aiBrain, 'generateResponse', (args, value) => synthesisCalls.push({ args, value })),
         observe(contextBuilder, 'buildContext', (args, value) => builtContexts.push({ args, value })),
+        observe(agent, 'executePlan', (args, value) => agentResults.push(value)),
         observe(conversation, '_speakResponse', (args) => spoken.push(args[0]))
     ];
-    const originalExecutePlan = agent.executePlan;
-    if (agentOverride) agent.executePlan = agentOverride;
     aiBrain.setAdapter(adapter);
     conversation.clearHistory();
     state.clearConversation();
     state.resetTask();
+    if (prepare) prepare();
 
     try {
         const result = callCommand
@@ -197,13 +201,22 @@ async function runRequest(request, {
             spoken,
             brainCalls,
             synthesisCalls,
-            builtContexts
+            builtContexts,
+            agentResults
         };
     } finally {
+        // Undo the spies first: the executePlan spy was installed on top of a
+        // test override, so its undo restores that override and the explicit
+        // restore below must run last to put the real method back.
+        for (const undo of restore.reverse()) undo();
         if (agentOverride) agent.executePlan = originalExecutePlan;
         aiBrain.setAdapter(previousAdapter);
-        for (const undo of restore.reverse()) undo();
     }
+}
+
+/** The `\n\n`-delimited prompt block that starts with `heading`. */
+function blockOf(text, heading) {
+    return text.split('\n\n').find(block => block.startsWith(heading));
 }
 
 // ---------------------------------------------------------------------------
@@ -248,15 +261,16 @@ test('B. a completed multi-step plan is synthesized exactly once with the planni
     assert.equal(adapter.calls[0].options.responseFormat, 'plan');
     assert.equal(adapter.calls[1].options.responseFormat, 'text');
 
-    // The synthesis received the original request, the Agent execution result
-    // and the SAME context the planning step built.
+    // The synthesis received the original request, the factual execution
+    // result and the SAME context the planning step built.
     assert.equal(run.synthesisCalls.length, 1, 'final synthesis must run exactly once');
     const [synthRequest, synthExecution, synthContext] = run.synthesisCalls[0].args;
     assert.equal(synthRequest, request, 'the original user request must be passed through');
     assert.equal(synthExecution.success, true);
     assert.match(String(synthExecution.response), /200/, 'the Agent execution result must be passed through');
-    // The untouched Agent result object is handed over: no wrapper, no copy.
-    assert.deepEqual(Object.keys(synthExecution).sort(), ['context', 'response', 'success']);
+    // Presentation payload only: no `context` field, no wrapper, no copy.
+    assert.deepEqual(Object.keys(synthExecution).sort(), ['response', 'success']);
+    assert.equal('context' in synthExecution, false);
 
     // AIBrain retained the context it built, and ConversationManager handed
     // that exact object back — no rebuild, no second context.
@@ -266,14 +280,21 @@ test('B. a completed multi-step plan is synthesized exactly once with the planni
     assert.equal(run.builtContexts.length, 1, 'the ContextBuilder must build exactly one context');
     assert.strictEqual(run.builtContexts[0].value, synthContext);
 
-    // The synthesis prompt embeds the planning prompt verbatim (same context,
-    // read-only) and then adds the request + execution result.
+    // The synthesis prompt reuses the same context under the presentation
+    // contract and then adds the request + execution result.
     const planningPrompt = adapter.calls[0].prompt;
     const synthesisPrompt = adapter.calls[1].prompt;
-    assert.ok(
-        synthesisPrompt.startsWith(planningPrompt),
-        'the synthesized prompt must reuse the exact planning context'
-    );
+    for (const heading of [
+        'ALICE Identity:',
+        'Interaction Context:',
+        'Emotional Response Guidance:',
+        'Response Priority Contract:',
+        'Available Tools:',
+        'User Request:'
+    ]) {
+        assert.equal(blockOf(synthesisPrompt, heading), blockOf(planningPrompt, heading),
+            `${heading} must be carried into the synthesis prompt unchanged`);
+    }
     assert.ok(synthesisPrompt.includes(`User Request: "${request}"`));
     assert.ok(synthesisPrompt.includes('Execution Result: '));
     assert.ok(
@@ -328,18 +349,30 @@ test('C. the synthesis prompt carries identity, interaction metadata, guidance a
     assert.ok(prompt.includes(`- Expressed signal: ${guidance.signal}`));
     assert.ok(prompt.includes(`- Communication tone: ${guidance.tone}`));
 
-    // Response priority contract + output contract + tools context
+    // Response priority contract, presentation-only response contract, identity
+    // section and tools context.
     assert.match(prompt, /Response Priority Contract:/);
     assert.ok(prompt.includes("The user's request is the primary task and must be answered or handled first."));
-    assert.match(prompt, /Required JSON Output Contract/);
+    assert.match(prompt, /Final Response Contract \(this step only\)/);
     assert.match(prompt, /Available Tools:/);
+    assert.match(prompt, /ALICE Identity:/);
+
+    // B. The machine-parsed planning instruction is NOT active in synthesis.
+    assert.doesNotMatch(prompt, /Required JSON Output Contract/);
+    assert.doesNotMatch(prompt, /Return ONLY one JSON object/);
+    assert.doesNotMatch(prompt, /machine-parsed/);
+    assert.ok(!prompt.includes('{"response": "your natural-language answer"}'));
+
+    // A. The planning prompt of the very same request still carries it.
+    assert.match(adapter.calls[0].prompt, /Required JSON Output Contract/);
+    assert.ok(adapter.calls[0].prompt.includes('Return ONLY one JSON object. Nothing before it and nothing after it.'));
+
+    // C. Synthesis is requested as plain text.
+    assert.equal(adapter.calls[1].options.responseFormat, 'text');
 
     // The request stays authoritative in the synthesis instruction itself.
     assert.match(prompt, /The user's request is the primary task: answer it exactly as asked\./);
     assert.ok(synthRequest === request);
-
-    // The planning prompt and the synthesis context block are identical.
-    assert.ok(adapter.calls[1].prompt.startsWith(adapter.calls[0].prompt));
     assert.equal(fetchCalls, before);
 });
 
@@ -372,12 +405,130 @@ test('C. no detector is re-run and no second interaction context is created', as
         'there must still be exactly one AI Brain request call');
     assert.equal(code.match(/aiBrain\.generateResponse\s*\(/g).length, 1,
         'there must be exactly one final synthesis call, in the helper');
-    assert.match(code, /generateResponse\(request,\s*agentResult,\s*context\s*\|\|\s*null\)/);
+    assert.match(code, /generateResponse\(request,\s*executionResult,\s*context\s*\|\|\s*null\)/);
     assert.match(code, /this\._synthesizeFinalResponse\(text,\s*agentResult,\s*aiResult\.context\)/);
     // No detector is invoked inside the synthesis helper.
     const helper = code.slice(code.indexOf('_synthesizeFinalResponse('), code.indexOf('_generateBasicResponse'));
     assert.doesNotMatch(helper, /detect(?:Intent|ResponseDepth|PersonalityMode|EmotionalSignal)\s*\(/);
     assert.doesNotMatch(helper, /createInteractionContext\s*\(/);
+});
+
+// ---------------------------------------------------------------------------
+// E + F. The execution payload is the factual result only — no context copy
+// ---------------------------------------------------------------------------
+
+test('E. the execution payload never duplicates the ContextBuilder context', async () => {
+    const pinned = memory.pinFact('The user prefers short answers.');
+    const request = 'Calculate 25 percent of 800.';
+    const adapter = new ScriptedAdapter({ plan: CALC_PLAN, synthesisText: 'That works out to 200.' });
+
+    let run;
+    try {
+        run = await runRequest(request, {
+            adapter,
+            prepare: () => {
+                state.addToConversation('user', 'Earlier: what is 10 percent of 200?');
+                state.addToConversation('assistant', 'Earlier: 10% of 200 = 20.');
+            }
+        });
+    } finally {
+        memory.unpinFact(pinned.id);
+    }
+
+    const [, payload, context] = run.synthesisCalls[0].args;
+    const payloadJson = JSON.stringify(payload);
+
+    // Exactly the factual presentation fields.
+    assert.deepEqual(Object.keys(payload).sort(), ['response', 'success']);
+    assert.equal('context' in payload, false, 'no Agent blackboard may be embedded');
+    assert.equal(fetchCalls, 0);
+
+    // Nothing from the ContextBuilder context is copied into the payload.
+    const contextJson = JSON.stringify(context);
+    assert.notEqual(payloadJson, contextJson);
+    for (const fragment of [
+        'ALICE Identity', 'Interaction Context', 'Emotional Response Guidance',
+        'Response Priority Contract', 'Required JSON Output Contract',
+        'Available Tools', 'Conversation History', 'interactionContext', 'timestamp'
+    ]) {
+        assert.ok(!payloadJson.includes(fragment), `payload must not carry context data: ${fragment}`);
+    }
+    // The context is supplied separately (and exactly once).
+    assert.strictEqual(context, run.brainCalls[0].value.context);
+    assert.equal(run.builtContexts.length, 1, 'exactly one context is built and reused');
+    assert.ok(Array.isArray(context.tools) && context.tools.length > 0, 'the real context is rich');
+    assert.ok(context.interactionContext, 'the real context carries its interaction metadata');
+    assert.ok(contextJson.includes('"interactionContext"'), 'the context data reaches synthesis separately');
+    assert.ok(payloadJson.length < contextJson.length / 4, 'the payload stays a small factual result');
+
+    // The Agent result object is untouched: its blackboard is still intact.
+    const agentResult = run.agentResults[0];
+    assert.ok(agentResult && agentResult.context && typeof agentResult.context === 'object',
+        'the Agent result must keep its own context (never mutated)');
+    assert.notStrictEqual(agentResult, payload, 'the payload is a new, minimal object');
+    assert.equal(agentResult.response, payload.response);
+    assert.equal(context, run.brainCalls[0].value.context);
+});
+
+test('F. the calculator fact stays authoritative in the synthesis prompt', async () => {
+    const adapter = new ScriptedAdapter({ plan: CALC_PLAN, synthesisText: '25% of 800 is 200.' });
+    const run = await runRequest(CALC_REQUEST, { adapter });
+
+    const prompt = adapter.calls[1].prompt;
+    const [, payload] = run.synthesisCalls[0].args;
+
+    // The real skill result, exactly as the skill produced it.
+    assert.ok(prompt.includes('25% of 800 = 200'), 'the calculator fact must reach the model');
+    assert.equal(payload.response, '25% of 800 = 200.');
+    assert.equal(run.result.response, '25% of 800 is 200.');
+    assert.equal(state.getTask().status, 'completed');
+    assert.equal(state.getTask().progress, 100);
+});
+
+test('G. the synthesis prompt stays bounded with realistic tools, history and memory', async () => {
+    const pinned = memory.pinFact('The user is working on a quantum computing report.');
+    memory.remember('quantum report deadline', 'The quantum report deadline is Friday');
+    const adapter = new ScriptedAdapter({
+        plan: {
+            goal: 'Research quantum computing, summarize the findings and create a document.',
+            steps: [{ id: 'step_1', label: 'Calculate 25 percent of 800', skill: 'calculator', input: '25 percent of 800', contextKey: 'step_1', risk: 'safe' }]
+        },
+        synthesisText: 'Done — the calculation is complete.'
+    });
+
+    const history = [];
+    for (let i = 0; i < 6; i++) {
+        history.push(['user', `Earlier user turn ${i + 1}: tell me about quantum computing, part ${i + 1}.`]);
+        history.push(['assistant', `Earlier ALICE turn ${i + 1}: here is what I found about quantum computing, part ${i + 1}.`]);
+    }
+
+    let run;
+    try {
+        run = await runRequest('Research quantum computing, summarize the findings and create a document.', {
+            adapter,
+            prepare: () => {
+                state.setTask({ active: true, status: 'running', currentAction: 'Gathering sources', progress: 40 });
+                for (const [role, text] of history) state.addToConversation(role, text);
+            }
+        });
+    } finally {
+        memory.unpinFact(pinned.id);
+        memory.forget('quantum report deadline');
+        state.resetTask();
+    }
+
+    const prompt = adapter.calls[1].prompt;
+    // The realistic sections are really present (this is the bounded prompt).
+    assert.match(prompt, /Available Tools:/);
+    assert.match(prompt, /Conversation History:/);
+    assert.match(prompt, /ALICE: Earlier ALICE turn 6/);
+    assert.ok(run.builtContexts[0].value.memory.pinnedFacts.length >= 1);
+    assert.ok(prompt.length <= CONFIG.ai.gateway.maxPromptChars,
+        `synthesis prompt is ${prompt.length} chars; the adapter limit is ${CONFIG.ai.gateway.maxPromptChars}`);
+    // ...and it is still smaller than the planning prompt it replaces.
+    assert.ok(prompt.length < adapter.calls[0].prompt.length,
+        'the presentation contract must not grow the prompt');
+    assert.equal(fetchCalls, 0);
 });
 
 // ---------------------------------------------------------------------------

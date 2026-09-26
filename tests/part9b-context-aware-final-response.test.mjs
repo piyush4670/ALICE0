@@ -68,16 +68,19 @@ globalThis.setInterval = nativeSetInterval;
 function createRecordingContextBuilder({ onBuild } = {}) {
     const buildCalls = [];
     const formatCalls = [];
+    const formatOptions = [];
     return {
         buildCalls,
         formatCalls,
+        formatOptions,
         buildContext(options = {}) {
             buildCalls.push(options);
             if (onBuild) return onBuild(options);
             return { request: options.request, tools: [], interactionContext: options.interactionContext };
         },
-        formatForPrompt(context) {
+        formatForPrompt(context, options) {
             formatCalls.push(context);
+            formatOptions.push(options);
             return `FORMATTED CONTEXT(${context?.request ?? ''})`;
         }
     };
@@ -95,9 +98,9 @@ function createSpyContextBuilder(inner = realContextBuilder) {
             buildCalls.push({ options, value });
             return value;
         },
-        formatForPrompt(context) {
-            const value = inner.formatForPrompt(context);
-            formatCalls.push({ context, value });
+        formatForPrompt(context, options) {
+            const value = inner.formatForPrompt(context, options);
+            formatCalls.push({ context, options, value });
             return value;
         }
     };
@@ -234,14 +237,19 @@ test('every established context section reaches the synthesis prompt', async () 
 
     const prompt = adapter.generateCalls[0].prompt;
 
-    // The production formatter ran on exactly the supplied context, and the
-    // synthesis prompt starts with that formatted context (nothing reordered
-    // or dropped in between).
+    // The production formatter ran on exactly the supplied context, under the
+    // presentation-only output contract, and the synthesis prompt starts with
+    // that formatted context (nothing reordered or dropped in between).
     assert.equal(contextBuilderSpy.formatCalls.length, 1);
     assert.strictEqual(contextBuilderSpy.formatCalls[0].context, context);
+    assert.equal(contextBuilderSpy.formatCalls[0].options?.outputContract, 'synthesis');
     assert.ok(
         prompt.startsWith(contextBuilderSpy.formatCalls[0].value),
         'the formatted ALICE context must be included verbatim'
+    );
+    assert.ok(
+        prompt.startsWith(realContextBuilder.formatForPrompt(context, { outputContract: 'synthesis' })),
+        'the synthesis prompt must be the real ContextBuilder presentation rendering'
     );
 
     // ALICE Identity
@@ -272,9 +280,13 @@ test('every established context section reaches the synthesis prompt', async () 
     assert.ok(prompt.includes("The user's request is the primary task and must be answered or handled first."));
     assert.ok(prompt.includes("Emotional guidance must never replace, reinterpret, or override the user's actual request."));
 
-    // Required JSON Output Contract
-    assert.match(prompt, /Required JSON Output Contract/);
-    assert.ok(prompt.includes('{"response": "your natural-language answer"}'));
+    // Presentation-only final-response contract — NOT the planning JSON contract
+    assert.match(prompt, /Final Response Contract \(this step only\)/);
+    assert.ok(prompt.includes('Answer the user in natural language, and return nothing else.'));
+    assert.ok(prompt.includes('Never return JSON, a plan, steps, code, or any other machine-readable or structured object.'));
+    assert.doesNotMatch(prompt, /Required JSON Output Contract/);
+    assert.doesNotMatch(prompt, /Return ONLY one JSON object/);
+    assert.ok(!prompt.includes('{"response": "your natural-language answer"}'));
 
     // Tools / memory / history context (task state travels on the same context)
     assert.match(prompt, /Available Tools:/);
@@ -290,7 +302,7 @@ test('every established context section reaches the synthesis prompt', async () 
         'Interaction Context:',
         'Emotional Response Guidance:',
         'Response Priority Contract:',
-        'Required JSON Output Contract',
+        'Final Response Contract (this step only)',
         'User Request:'
     ];
     let previous = -1;
@@ -456,9 +468,57 @@ test('the synthesis step still asks for the final natural-language response only
     assert.match(prompt, /Reply with the final user-facing natural-language response only/);
     assert.match(prompt, /no JSON, no plan, no Markdown code fences/);
     assert.match(prompt, /no internal reasoning or process narration/);
-    // The structured planning contract stays intact inside the context; this
-    // step does not ask the model for a plan object of its own.
+    // The planning JSON contract is not inherited by this step at all.
+    assert.doesNotMatch(prompt, /Required JSON Output Contract/);
+    assert.doesNotMatch(prompt, /Return ONLY one JSON object/);
+    assert.doesNotMatch(prompt, /"steps": \[\{"id"/);
     assert.ok(!/synthes[^\n]*\{"goal"/i.test(prompt), 'synthesis must not request a plan object');
+});
+
+test('planning prompts keep the JSON planning contract while synthesis renders the presentation contract', async () => {
+    const context = realContextBuilder.buildContext({ request: EXAMPLE_REQUEST });
+
+    const planning = realContextBuilder.formatForPrompt(context);
+    const synthesis = realContextBuilder.formatForPrompt(context, { outputContract: 'synthesis' });
+
+    // A. Planning contract intact (default rendering is byte-for-byte the same).
+    assert.equal(realContextBuilder.formatForPrompt(context, { outputContract: 'planning' }), planning);
+    assert.match(planning, /Required JSON Output Contract — your entire reply is machine-parsed:/);
+    assert.ok(planning.includes('Return ONLY one JSON object. Nothing before it and nothing after it.'));
+    assert.ok(planning.includes('{"response": "your natural-language answer"}'));
+    assert.ok(planning.includes('{"goal": "overall user goal"'));
+
+    // B. Synthesis never inherits the machine-parsed planning instruction.
+    assert.doesNotMatch(synthesis, /Required JSON Output Contract/);
+    assert.doesNotMatch(synthesis, /Return ONLY one JSON object/);
+    assert.doesNotMatch(synthesis, /machine-parsed/);
+    assert.doesNotMatch(synthesis, /"response": "your natural-language answer"/);
+
+    // Every shared section renders byte-for-byte identically...
+    const blockOf = (text, heading) => text.split('\n\n').find(block => block.startsWith(heading));
+    const headingOf = text => text.split('\n\n').map(block => block.split('\n')[0]);
+    for (const heading of [
+        'ALICE Identity:',
+        'Interaction Context:',
+        'Emotional Response Guidance:',
+        'Response Priority Contract:',
+        'Available Tools:',
+        'User Request:'
+    ]) {
+        assert.equal(blockOf(synthesis, heading), blockOf(planning, heading),
+            `${heading} must render identically for planning and synthesis`);
+    }
+
+    // ...and the two output-instruction blocks are the only difference.
+    assert.deepEqual(
+        headingOf(synthesis).filter(h => !h.startsWith('System:') && !h.startsWith('Final Response Contract')),
+        headingOf(planning).filter(h =>
+            !h.startsWith('System:') &&
+            !h.startsWith('Required JSON Output Contract') &&
+            !h.startsWith('Examples:')
+        ),
+        'no context section may be added, dropped, or reordered for synthesis'
+    );
 });
 
 // ---------------------------------------------------------------------------
@@ -586,8 +646,9 @@ test('AIBrain still owns no detector, guidance, or identity logic of its own', a
         assert.doesNotMatch(source, new RegExp(`from\\s*['"]\\./${forbidden.slice(2)}['"]`),
             `AIBrain must not import ${forbidden}`);
     }
-    // The final synthesis path delegates formatting to the ContextBuilder.
-    assert.match(source, /this\._contextBuilder\.formatForPrompt\(fullContext\)/);
+    // The final synthesis path delegates formatting to the ContextBuilder, and
+    // asks for the presentation contract rather than reimplementing anything.
+    assert.match(source, /formatForPrompt\(\s*fullContext,\s*\{ outputContract: 'synthesis' \}\s*\)/);
     assert.match(source, /this\._contextBuilder\.buildContext\(\{/);
     // interactionContext is prompt metadata, not an adapter option.
     assert.match(source, /const \{ interactionContext: _interactionContext, \.\.\.adapterOptions \} = options;/);

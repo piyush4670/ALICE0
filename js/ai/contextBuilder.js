@@ -224,6 +224,36 @@ class ContextBuilder {
     }
 
     /**
+     * Part 9B — build the presentation-only contract for the final response
+     * step.
+     *
+     * This replaces the machine-parsed planning contract when a context is
+     * formatted with `outputContract: 'synthesis'`. It states the same
+     * boundaries the rest of the pipeline already enforces: the task has
+     * already been executed, so this step produces no plan, no JSON, no tool
+     * call and no execution — only the user-facing natural-language answer,
+     * with the execution result as factual task output and the user's request
+     * still authoritative.
+     *
+     * It is prompt text only; it grants nothing and relaxes nothing.
+     *
+     * @returns {string} Final-response-contract prompt section
+     */
+    _buildFinalResponseContract() {
+        return [
+            'Final Response Contract (this step only) — your reply is the user-facing answer:',
+            '1. The task has already been executed and this is the final step: do not redo, re-plan, or repeat it.',
+            '2. Never return JSON, a plan, steps, code, or any other machine-readable or structured object.',
+            '3. Never propose, request, or call a tool, and never claim to have run something new.',
+            '4. Never execute anything yourself and never ask for permission or confirmation.',
+            '5. Answer the user in natural language, and return nothing else.',
+            '6. The execution result is factual task output: report it accurately and never invent different values.',
+            "7. The user's request stays authoritative: answer exactly that request.",
+            '- ALICE identity, interaction context, and emotional response guidance shape communication style only.'
+        ].join('\n');
+    }
+
+    /**
      * Format the centralized ALICE identity for model context. This reads the
      * declarative foundation directly instead of maintaining a second copy.
      *
@@ -347,19 +377,41 @@ class ContextBuilder {
 
     /**
      * Format the context object into a structured prompt representation.
+     *
+     * Part 9B — `outputContract` selects which OUTPUT instruction the prompt
+     * carries:
+     *   - 'planning' (default, unchanged): the Phase 6.4 machine-parsed JSON
+     *     planning contract. Every existing caller renders this default, so
+     *     planning prompts are byte-for-byte unchanged.
+     *   - 'synthesis': the presentation-only final-response contract. The
+     *     planning JSON contract is NOT rendered at all, so a final synthesis
+     *     prompt never inherits "Return ONLY one JSON object" while being
+     *     asked for natural language. Identity, interaction context, emotional
+     *     guidance, the response-priority contract, tools, memory, history and
+     *     the user request are unchanged.
+     *
      * @param {Object} context
+     * @param {Object} [options]
+     * @param {'planning'|'synthesis'} [options.outputContract='planning']
      * @returns {string} Formatted prompt text
      */
-    formatForPrompt(context) {
+    formatForPrompt(context, options = {}) {
         const sections = [];
         const tools = Array.isArray(context?.tools) ? context.tools : [];
+        // Anything other than the explicit 'synthesis' value keeps the
+        // pre-existing planning behaviour.
+        const isSynthesis = options?.outputContract === 'synthesis';
 
         // Instructions
-        sections.push(
-            'System: You are ALICE, an advanced AI companion. ' +
-            'Answer informational and conversational requests directly, and propose a declarative plan of steps ' +
-            'using the registered tools only when the request actually requires an action. ' +
-            'You must return only valid declarative data. Do not execute arbitrary code.'
+        sections.push(isSynthesis
+            ? 'System: You are ALICE, an advanced AI companion. ' +
+              'This is the final response step: the task has already been executed, so you do not plan, ' +
+              'do not call tools, and you never return structured data. ' +
+              'You only answer the user, in natural language.'
+            : 'System: You are ALICE, an advanced AI companion. ' +
+              'Answer informational and conversational requests directly, and propose a declarative plan of steps ' +
+              'using the registered tools only when the request actually requires an action. ' +
+              'You must return only valid declarative data. Do not execute arbitrary code.'
         );
 
         // Centralized identity and explicit interaction metadata (Part 3).
@@ -371,8 +423,11 @@ class ContextBuilder {
         // Part 8D: the user's request stays primary; guidance is style only.
         sections.push(this._buildResponsePriorityContractSection());
 
-        // Explicit machine-readable output contract (Phase 6.4)
-        sections.push(this._buildOutputContract(tools));
+        // Output contract: the explicit machine-readable planning contract
+        // (Phase 6.4), or the presentation-only final-response contract.
+        sections.push(isSynthesis
+            ? this._buildFinalResponseContract()
+            : this._buildOutputContract(tools));
 
         // Tools
         if (Array.isArray(context.tools) && context.tools.length > 0) {
