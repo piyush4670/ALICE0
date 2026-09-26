@@ -21,7 +21,8 @@
  * exact shape answers with syntactically valid but unusable JSON — which
  * the AI Brain must reject, dropping the user back onto the deterministic
  * fallback path. This module therefore states the contract explicitly in
- * every prompt it formats.
+ * every planning prompt it formats. Final synthesis uses a separate
+ * presentation-only response contract.
  *
  * This is a prompt-contract change only. Model output stays UNTRUSTED:
  * nothing here relaxes PlanValidator, the Agent, or the Permission Gateway.
@@ -223,6 +224,18 @@ class ContextBuilder {
         ].join('\n');
     }
 
+    /** Presentation-only contract for the already-executed task's final answer. */
+    _buildPresentationContract() {
+        return [
+            'Final Presentation-Only Response Contract:',
+            '- The task has already been executed. This step is for presentation only.',
+            '- Do not generate a plan, JSON, or tool calls. Do not execute anything.',
+            '- Return only the natural-language user-facing answer, without a JSON envelope or internal reasoning.',
+            '- The original user request remains authoritative; the execution result is factual task output. Report it accurately.',
+            '- ALICE Identity, Interaction Context, and Emotional Response Guidance influence communication style only.'
+        ].join('\n');
+    }
+
     /**
      * Format the centralized ALICE identity for model context. This reads the
      * declarative foundation directly instead of maintaining a second copy.
@@ -347,20 +360,31 @@ class ContextBuilder {
 
     /**
      * Format the context object into a structured prompt representation.
+     * The default planning contract is unchanged; final synthesis explicitly
+     * selects a presentation-only contract without planning instructions.
      * @param {Object} context
+     * @param {Object} [options]
+     * @param {'planning'|'presentation'} [options.responseContract='planning']
      * @returns {string} Formatted prompt text
      */
-    formatForPrompt(context) {
+    formatForPrompt(context, { responseContract = 'planning' } = {}) {
         const sections = [];
         const tools = Array.isArray(context?.tools) ? context.tools : [];
 
         // Instructions
-        sections.push(
-            'System: You are ALICE, an advanced AI companion. ' +
-            'Answer informational and conversational requests directly, and propose a declarative plan of steps ' +
-            'using the registered tools only when the request actually requires an action. ' +
-            'You must return only valid declarative data. Do not execute arbitrary code.'
-        );
+        if (responseContract === 'presentation') {
+            sections.push(
+                'System: You are ALICE, an advanced AI companion. ' +
+                'The task has already been executed. Present only its final user-facing natural-language answer.'
+            );
+        } else {
+            sections.push(
+                'System: You are ALICE, an advanced AI companion. ' +
+                'Answer informational and conversational requests directly, and propose a declarative plan of steps ' +
+                'using the registered tools only when the request actually requires an action. ' +
+                'You must return only valid declarative data. Do not execute arbitrary code.'
+            );
+        }
 
         // Centralized identity and explicit interaction metadata (Part 3).
         sections.push(this._buildIdentitySection());
@@ -371,8 +395,10 @@ class ContextBuilder {
         // Part 8D: the user's request stays primary; guidance is style only.
         sections.push(this._buildResponsePriorityContractSection());
 
-        // Explicit machine-readable output contract (Phase 6.4)
-        sections.push(this._buildOutputContract(tools));
+        // Planning is machine-parsed; final synthesis is presentation only.
+        sections.push(responseContract === 'presentation'
+            ? this._buildPresentationContract()
+            : this._buildOutputContract(tools));
 
         // Tools
         if (Array.isArray(context.tools) && context.tools.length > 0) {

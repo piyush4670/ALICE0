@@ -202,6 +202,26 @@ async function withStub(handler, fn) {
     }
 }
 
+/**
+ * Part 9B: a completed multi-step task is turned into the final user-facing
+ * response through aiBrain.generateResponse(). These tests stub that single
+ * synthesis call so the suite stays offline, and record its arguments.
+ * The stub echoes the Agent's own completion text so the pre-existing
+ * assertions on the returned response keep their original meaning.
+ */
+function stubGenerateResponse() {
+    const original = aiBrain.generateResponse;
+    const calls = [];
+    aiBrain.generateResponse = async (request, executionResult, context) => {
+        calls.push([request, executionResult, context]);
+        return `Synthesized: ${executionResult?.response ?? ''}`;
+    };
+    return {
+        calls,
+        restore() { aiBrain.generateResponse = original; }
+    };
+}
+
 function directResponse(text) {
     return { success: true, isMultiStep: false, response: text };
 }
@@ -508,6 +528,7 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
         };
         state.resetTask();
 
+        const synthesis = stubGenerateResponse();
         try {
             await withStub(async () => ({
                 success: true,
@@ -525,8 +546,18 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
                 assert.equal(state.getTask().status, 'completed');
                 assert.ok(gateCalls >= 1, 'Permission Gateway must still run');
                 assert.equal(fetchCalls, 0);
+
+                // Part 9B: the completed plan is synthesized exactly once, with
+                // the original request and the Agent's execution result, and the
+                // synthesized text is what the caller receives.
+                assert.equal(synthesis.calls.length, 1, 'final synthesis must run exactly once');
+                assert.equal(synthesis.calls[0][0], 'Calculate 2 plus 2');
+                assert.equal(synthesis.calls[0][1].success, true);
+                assert.match(synthesis.calls[0][1].response, /4/);
+                assert.match(result.response, /^Synthesized: /);
             });
         } finally {
+            synthesis.restore();
             permissions.gate = originalGate;
             state.resetTask();
         }
