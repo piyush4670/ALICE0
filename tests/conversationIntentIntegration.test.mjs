@@ -115,6 +115,27 @@ async function withStub(handler, fn) {
     }
 }
 
+/**
+ * Part 9B: after the Agent completes a validated multi-step plan,
+ * ConversationManager turns the execution result into the final user-facing
+ * response through aiBrain.generateResponse(). This suite stubs that single
+ * synthesis call so it stays offline, and records every argument it receives.
+ * The stub echoes the Agent's completion text so the pre-existing response
+ * assertions keep their meaning.
+ */
+function stubGenerateResponse() {
+    const original = aiBrain.generateResponse;
+    const calls = [];
+    aiBrain.generateResponse = async (request, executionResult, context) => {
+        calls.push([request, executionResult, context]);
+        return `Synthesized: ${executionResult?.response ?? ''}`;
+    };
+    return {
+        calls,
+        restore() { aiBrain.generateResponse = original; }
+    };
+}
+
 /** Assert the full InteractionContext contract for a forwarded call. */
 function assertContextShape(ctx, { text, intent, source = 'text', turnType = 'new' }) {
     assert.ok(ctx && typeof ctx === 'object', 'interactionContext must be an object');
@@ -302,6 +323,7 @@ describe('ConversationManager intent detection integration (Part 7C)', { concurr
             gateCalls += 1;
             return originalGate.apply(permissions, args);
         };
+        const synthesis = stubGenerateResponse();
         try {
             // When the normal pipeline DOES execute a plan, the permission
             // gateway still runs exactly as before — intent detection changed
@@ -317,8 +339,17 @@ describe('ConversationManager intent detection integration (Part 7C)', { concurr
                 assert.match(result.response, /4/);
                 assert.ok(gateCalls >= 1, 'Permission Gateway must still run for real executions');
                 assert.equal(state.getTask().status, 'completed');
+
+                // Part 9B: exactly one final synthesis call, carrying the
+                // original request and the Agent's completed execution result.
+                assert.equal(synthesis.calls.length, 1, 'final synthesis must run exactly once');
+                assert.equal(synthesis.calls[0][0], 'Calculate 2 plus 2');
+                assert.equal(synthesis.calls[0][1].success, true);
+                assert.match(synthesis.calls[0][1].response, /4/);
+                assert.match(result.response, /^Synthesized: /);
             });
         } finally {
+            synthesis.restore();
             permissions.gate = originalGate;
             state.resetTask();
         }

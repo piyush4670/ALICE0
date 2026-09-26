@@ -667,11 +667,27 @@ class ConversationManager {
                             { isMultiStep: true, goal: aiResult.goal || text, plan: aiResult.plan },
                             (t) => this._speakResponse(t, 'agent', token)
                         );
+                        if (agentResult && agentResult.success) {
+                            state.set('aliceState', CONFIG.states.COMPLETING);
+                            // Part 9B: turn the completed execution result into
+                            // the single user-facing response through the
+                            // existing context-aware AIBrain synthesis, reusing
+                            // the context already built for this request.
+                            return {
+                                response: await this._synthesizeFinalResponse(text, agentResult, aiResult.context),
+                                skill: 'agent'
+                            };
+                        }
                         if (agentResult) {
+                            // Terminal non-success outcomes (failed step,
+                            // cancelled task, denied confirmation) keep the
+                            // Agent's own response and never run synthesis.
                             state.set('aliceState', CONFIG.states.COMPLETING);
                             return { response: agentResult.response, skill: 'agent' };
                         }
                     } else if (aiResult.response) {
+                        // Direct AI response: already user-facing, so it is
+                        // returned as-is and never re-synthesized.
                         return { response: aiResult.response, skill: 'ai' };
                     }
                 }
@@ -724,6 +740,43 @@ class ConversationManager {
         // Fall back to basic responses
         const basicResponse = this._generateBasicResponse(text);
         return { response: basicResponse, skill: 'basic' };
+    }
+
+    /**
+     * Part 9B — final response synthesis for a completed multi-step task.
+     *
+     * Converts the Agent's completed execution result into the single
+     * user-facing response through the existing context-aware
+     * aiBrain.generateResponse(), reusing the ContextBuilder context that was
+     * already built for this request. No second interaction context is
+     * created, no detector is re-run, and nothing is rebuilt: AIBrain formats
+     * the supplied context read-only through the ContextBuilder.
+     *
+     * The user's request stays authoritative and the execution result stays
+     * authoritative for the facts the skills produced. This step is
+     * presentation only — it executes no tool, requests no permission,
+     * bypasses no validation, cannot alter the executed plan, and grants no
+     * authority.
+     *
+     * If synthesis fails or yields no text, the Agent's own completion
+     * response is returned unchanged so the user never gets an empty answer.
+     *
+     * @param {string} request - The original user request
+     * @param {Object} agentResult - The completed Agent execution result
+     * @param {Object} [context] - The ContextBuilder context built for this request
+     * @returns {Promise<string>} The final user-facing response
+     */
+    async _synthesizeFinalResponse(request, agentResult, context) {
+        try {
+            const synthesized = await aiBrain.generateResponse(request, agentResult, context || null);
+            if (typeof synthesized === 'string' && synthesized.trim().length > 0) {
+                return synthesized;
+            }
+            state.logActivity('Final response synthesis produced no text — using the task result', 'warning');
+        } catch (e) {
+            state.logActivity(`Final response synthesis failed: ${e.message}`, 'warning');
+        }
+        return agentResult.response;
     }
 
     /**

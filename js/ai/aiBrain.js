@@ -250,7 +250,11 @@ export class AIBrain {
      *     to adapter.generate(); ContextBuilder fields (historyLimit,
      *     memoryLimit, includeTools, includeMemory, includeHistory,
      *     includeTaskState) keep working as before.
-     * @returns {Promise<Object>} Processed result or fallback indicator
+     * @returns {Promise<Object>} Processed result or fallback indicator. A
+     *     validated multi-step result additionally carries `context`: the
+     *     already-built ContextBuilder context for this request (returned
+     *     as-is, never rebuilt or mutated), so the caller can hand the SAME
+     *     context to generateResponse() after the Agent executes the plan.
      */
     async processRequest(request, options = {}) {
         const text = String(request || '').trim();
@@ -312,6 +316,12 @@ export class AIBrain {
                     isMultiStep: true,
                     goal: text,
                     plan: validation.normalizedPlan,
+                    // Part 9B: the ContextBuilder context that produced this
+                    // plan is retained on the result — the same object, never
+                    // rebuilt and never mutated — so the post-execution final
+                    // synthesis can reuse it instead of building a second,
+                    // independent context.
+                    context,
                     raw: generation.raw
                 };
             }
