@@ -383,6 +383,35 @@ const rPermFlags = await skillManager.executeByName('notes', 'delete my note abo
 check('arbitrary context flags cannot bypass the gateway',
     rPermFlags.success === false && rPermFlags.permission.decision === 'denied' && promptCount === 2);
 
+// Safe note deletion regression: ambiguous matches, zero matches, stale approvals
+autoMode = 'approve';
+const ambig1 = memory.addNote('Ambig Alpha', 'content 1');
+await new Promise(r => setTimeout(r, 2));
+const ambig2 = memory.addNote('Ambig Beta', 'content 2');
+const rAmbig = await skillManager.executeByName('notes', 'delete note about Ambig');
+check('multiple keyword matches cause no deletion and request clarification',
+    rAmbig.success === false && /multiple notes match/i.test(rAmbig.error) && memory.getNote(ambig1.id) !== undefined && memory.getNote(ambig2.id) !== undefined);
+
+const rZero = await skillManager.executeByName('notes', 'delete note about NonExistentNoteXYZ');
+check('zero matches cause no deletion and return a useful message',
+    rZero.success === false && /no note found matching/i.test(rZero.error));
+
+// Stale approval cannot delete another note
+// Delete ambig2 (note 1)
+promptCount = 0;
+autoMode = 'approve';
+const rDelAmbig2 = await skillManager.executeByName('notes', 'delete note 1');
+check('unambiguous note deletion succeeds when approved',
+    rDelAmbig2.success === true && memory.getNote(ambig2.id) === undefined);
+
+// Now ambig1 is note 1. Stale approval must not delete it when user denies.
+promptCount = 0;
+autoMode = 'deny';
+const rStale = await skillManager.executeByName('notes', 'delete note 1');
+check('stale approval cannot delete another note',
+    rStale.success === false && memory.getNote(ambig1.id) !== undefined);
+memory.deleteNote(ambig1.id);
+
 // ============================================================================
 console.log('5) SKILLS');
 

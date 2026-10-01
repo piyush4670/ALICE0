@@ -4,6 +4,8 @@
  */
 import { state } from '../state.js';
 import { memory } from '../memory.js';
+import { permissions } from '../permissions.js';
+import { CONFIG } from '../config.js';
 
 export const notes = {
     name: 'notes',
@@ -26,9 +28,100 @@ export const notes = {
     ],
 
     /**
+     * Resolve deletion target from user input.
+     * Distinguishes between note number deletion, single keyword matches,
+     * multiple matches (ambiguous), zero matches, and empty input.
+     */
+    _parseDeletionTarget(input) {
+        if (typeof input !== 'string') {
+            return { type: 'invalid' };
+        }
+
+        // Check for note number first, e.g. "delete note 1", "delete note #1", "delete #1", "remove note 2"
+        // Avoid treating "delete note about 123" as note number 123
+        const isAboutNumber = /(?:about|called|titled|named)\s+\d+/i.test(input);
+        const numMatch = !isAboutNumber && input.match(/(?:delete|remove)\s+(?:my\s+)?(?:note\s+)?(?:number\s+)?#?(\d+)(?:\s*$|\b)/i);
+
+        if (numMatch) {
+            const noteNumber = numMatch[1];
+            const allNotes = memory.getNotes();
+            const index = parseInt(noteNumber, 10) - 1;
+            if (index >= 0 && index < allNotes.length) {
+                return {
+                    type: 'number',
+                    noteNumber,
+                    note: allNotes[index],
+                    index
+                };
+            }
+            return {
+                type: 'number_not_found',
+                noteNumber
+            };
+        }
+
+        // Extract keyword
+        let keyword = input
+            .replace(/^(?:delete|remove)\s+(?:my\s+)?notes?(?:\s+(?:about|called|titled|named))?(?:\s+|$)/i, '')
+            .trim();
+
+        keyword = keyword.replace(/[.?!]+$/, '').trim();
+
+        if (!keyword) {
+            return { type: 'empty' };
+        }
+
+        const results = memory.searchNotes(keyword);
+        if (results.length === 0) {
+            return {
+                type: 'keyword_zero',
+                keyword
+            };
+        }
+
+        if (results.length > 1) {
+            return {
+                type: 'keyword_multiple',
+                keyword,
+                matches: results
+            };
+        }
+
+        return {
+            type: 'keyword_single',
+            keyword,
+            note: results[0]
+        };
+    },
+
+    /**
+     * Bind approval to the exact note ID and operation.
+     */
+    getApprovalKey(input, context = {}) {
+        const text = String(input ?? '').toLowerCase();
+        const isDelete = (text.match(/\b(?:delete|remove)\b/i) && text.match(/\bnotes?\b/i)) ||
+                         (context && context.action === 'delete');
+        if (!isDelete) return null;
+
+        const target = this._parseDeletionTarget(input);
+        if (target.type === 'number' || target.type === 'keyword_single') {
+            this._snapshot = {
+                id: target.note.id,
+                title: target.note.title,
+                content: target.note.content,
+                created: target.note.created,
+                updated: target.note.updated
+            };
+            return `delete::${target.note.id}`;
+        }
+        this._snapshot = null;
+        return null;
+    },
+
+    /**
      * Execute notes command
      */
-    execute(input, context = {}) {
+    async execute(input, context = {}) {
         // Agent path: save prepared content directly (used by "save to notes" step)
         if (context && context.action === 'create' && context.content !== undefined) {
             const content = String(context.content);
@@ -44,15 +137,15 @@ export const notes = {
         const text = input.toLowerCase();
         
         // Determine action
-        if (text.match(/show|what are|read|find|search/i) && text.match(/notes?/i)) {
+        if (text.match(/\b(?:show|what\s+are|read|find|search)\b/i) && text.match(/\bnotes?\b/i)) {
             return this._showNotes(input);
         }
         
-        if (text.match(/delete|remove/i) && text.match(/notes?/i)) {
-            return this._deleteNote(input);
+        if ((text.match(/\b(?:delete|remove)\b/i) && text.match(/\bnotes?\b/i)) || (context && context.action === 'delete')) {
+            return this._deleteNote(input, context);
         }
         
-        if (text.match(/take|write|remember|save|add|note/i)) {
+        if (text.match(/\b(?:take|write|remember|save|add|note)\b/i)) {
             return this._addNote(input);
         }
         
@@ -142,44 +235,159 @@ export const notes = {
     /**
      * Delete a note
      */
-    _deleteNote(input) {
-        const noteNumber = input.match(/delete\s+(?:note\s+)?#?(\d+)/i)?.[1];
-        
-        if (noteNumber) {
-            const notes = memory.getNotes();
-            const index = parseInt(noteNumber) - 1;
-            
-            if (index >= 0 && index < notes.length) {
-                const note = notes[index];
-                memory.deleteNote(note.id);
-                return {
-                    success: true,
-                    result: `Deleted note: "${note.title}"`
-                };
-            }
-            
+    async _deleteNote(input, context = {}) {
+        const target = this._parseDeletionTarget(input);
+
+        if (target.type === 'number_not_found') {
             return {
                 success: false,
-                error: `I couldn't find note number ${noteNumber}`
+                error: `I couldn't find note number ${target.noteNumber}`
             };
         }
 
-        // Try to find by keyword
-        const keyword = input.replace(/delete\s+(?:my\s+)?note\s+(?:about\s+)?/i, '').trim();
-        if (keyword) {
-            const results = memory.searchNotes(keyword);
-            if (results.length > 0) {
-                memory.deleteNote(results[0].id);
-                return {
-                    success: true,
-                    result: `Deleted note: "${results[0].title}"`
+        if (target.type === 'empty') {
+            return {
+                success: false,
+                error: 'Which note would you like to delete? Please specify the note number or content.'
+            };
+        }
+
+        if (target.type === 'keyword_zero') {
+            return {
+                success: false,
+                error: `No note found matching "${target.keyword}".`
+            };
+        }
+
+        if (target.type === 'keyword_multiple') {
+            const allNotes = memory.getNotes();
+            const formatted = target.matches.map(n => {
+                const num = allNotes.findIndex(item => item.id === n.id) + 1;
+                const prefix = num > 0 ? `#${num}: ` : '';
+                const snippet = n.content ? ` - "${n.content.substring(0, 60)}${n.content.length > 60 ? '...' : ''}"` : '';
+                return `- ${prefix}"${n.title}"${snippet}`;
+            }).join('\n');
+
+            const clarifyMsg = `Multiple notes match "${target.keyword}". Please specify which note to delete by number or more specific title:\n${formatted}`;
+            return {
+                success: false,
+                error: clarifyMsg,
+                clarification: clarifyMsg,
+                matches: target.matches
+            };
+        }
+
+        // Unambiguous target (number or keyword_single)
+        const noteToDelete = target.note;
+
+        // Snapshot of the note presented for confirmation
+        let snapshot = (this._snapshot && this._snapshot.id === noteToDelete.id)
+            ? this._snapshot
+            : {
+                id: noteToDelete.id,
+                title: noteToDelete.title,
+                content: noteToDelete.content,
+                created: noteToDelete.created,
+                updated: noteToDelete.updated
+            };
+
+        // Re-check that the target still exists and is the intended note before prompting/deleting
+        const current = memory.getNote(noteToDelete.id);
+        if (!current || current.id !== noteToDelete.id || current.title !== noteToDelete.title) {
+            this._snapshot = null;
+            return {
+                success: false,
+                error: `I couldn't find note "${noteToDelete.title}" to delete.`
+            };
+        }
+
+        const approvalKey = `notes::delete::${noteToDelete.id}`;
+
+        // Ensure approval through the existing permission mechanism where required
+        if (CONFIG?.permissions?.enabled) {
+            const isApproved = permissions.isApproved(approvalKey);
+            if (!isApproved) {
+                // Refresh snapshot immediately before prompting
+                const prePrompt = memory.getNote(noteToDelete.id);
+                if (!prePrompt) {
+                    this._snapshot = null;
+                    return {
+                        success: false,
+                        error: `I couldn't find note "${noteToDelete.title}" to delete.`
+                    };
+                }
+                snapshot = {
+                    id: prePrompt.id,
+                    title: prePrompt.title,
+                    content: prePrompt.content,
+                    created: prePrompt.created,
+                    updated: prePrompt.updated
                 };
+
+                const approved = await permissions.requestConfirmation({
+                    title: 'Confirmation required',
+                    message: 'destructive action (cannot be easily undone)',
+                    action: input.slice(0, 300)
+                });
+                if (!approved) {
+                    this._snapshot = null;
+                    return {
+                        success: false,
+                        cancelled: true,
+                        error: 'Cancelled — the action was not approved. Nothing was changed.'
+                    };
+                }
             }
         }
 
+        // After approval, re-fetch the note by ID and verify that it still matches
+        // the exact snapshot presented for confirmation before deleting it.
+        const postApprovalNote = memory.getNote(noteToDelete.id);
+        if (!postApprovalNote) {
+            this._snapshot = null;
+            permissions.consumeApproval(approvalKey);
+            return {
+                success: false,
+                error: `Note "${snapshot.title}" disappeared while confirmation was pending and needs to be reviewed again.`
+            };
+        }
+
+        const isUnchanged =
+            postApprovalNote.id === snapshot.id &&
+            postApprovalNote.title === snapshot.title &&
+            postApprovalNote.content === snapshot.content &&
+            postApprovalNote.created === snapshot.created &&
+            postApprovalNote.updated === snapshot.updated;
+
+        if (!isUnchanged) {
+            this._snapshot = null;
+            // Never delete a changed note using an approval for its earlier state.
+            permissions.consumeApproval(approvalKey);
+            permissions.consumeApproval(`notes::${String(input ?? '').trim().toLowerCase()}`);
+            return {
+                success: false,
+                error: `Note "${snapshot.title}" changed while confirmation was pending and needs to be reviewed again.`
+            };
+        }
+
+        this._snapshot = null;
+
+        // Perform safe deletion
+        const deleted = memory.deleteNote(noteToDelete.id);
+        if (!deleted) {
+            return {
+                success: false,
+                error: `Failed to delete note "${noteToDelete.title}".`
+            };
+        }
+
+        // Consume approval so a stale approval cannot delete another note
+        permissions.consumeApproval(approvalKey);
+        permissions.consumeApproval(`notes::${String(input ?? '').trim().toLowerCase()}`);
+
         return {
-            success: false,
-            error: 'Which note would you like to delete? Please specify the note number or content.'
+            success: true,
+            result: `Deleted note: "${noteToDelete.title}"`
         };
     }
 };

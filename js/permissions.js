@@ -359,7 +359,7 @@ class PermissionManager {
         }
 
         // A retried action the user just approved does not re-prompt
-        const key = this._approvalKey(skill, input);
+        const key = this._approvalKey(skill, input, context);
         if (this._isRecentlyApproved(key)) {
             return { allowed: true };
         }
@@ -385,24 +385,71 @@ class PermissionManager {
         };
     }
 
-    _approvalKey(skill, input) {
+    _approvalKey(skill, input, context = {}) {
+        if (skill && typeof skill.getApprovalKey === 'function') {
+            const customKey = skill.getApprovalKey(input, context);
+            if (customKey) {
+                return `${skill.name}::${customKey}`;
+            }
+        }
         return `${skill.name}::${String(input ?? '').trim().toLowerCase()}`;
     }
 
     _isRecentlyApproved(key) {
-        const at = this._approved.get(key);
-        return typeof at === 'number' && (Date.now() - at) <= APPROVAL_MEMO_MS;
+        if (!key) return false;
+        const entry = this._approved.get(key);
+        if (!entry) return false;
+        const ts = typeof entry === 'object' && entry !== null ? entry.timestamp : entry;
+        const promptId = typeof entry === 'object' && entry !== null ? entry.promptId : null;
+
+        if (typeof ts !== 'number' || (Date.now() - ts) > APPROVAL_MEMO_MS) {
+            return false;
+        }
+
+        if (typeof promptId === 'number' && this._promptCounter > promptId) {
+            return false;
+        }
+
+        return true;
     }
 
     _rememberApproval(key) {
+        if (!key) return;
         // Keep the memo bounded
         if (this._approved.size > 64) {
             const now = Date.now();
-            for (const [k, at] of this._approved) {
-                if (now - at > APPROVAL_MEMO_MS) this._approved.delete(k);
+            for (const [k, entry] of this._approved) {
+                const ts = typeof entry === 'object' && entry !== null ? entry.timestamp : entry;
+                if (now - ts > APPROVAL_MEMO_MS) this._approved.delete(k);
             }
         }
-        this._approved.set(key, Date.now());
+        this._approved.set(key, {
+            timestamp: Date.now(),
+            promptId: this._promptCounter
+        });
+    }
+
+    /**
+     * Check if an approval key is currently valid.
+     */
+    isApproved(key) {
+        if (!key) return false;
+        if (this._isRecentlyApproved(key)) return true;
+        if (typeof key === 'string' && !key.startsWith('notes::') && this._isRecentlyApproved(`notes::${key}`)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Consume / invalidate an approval so it cannot be reused.
+     */
+    consumeApproval(key) {
+        if (!key) return;
+        this._approved.delete(key);
+        if (typeof key === 'string' && !key.startsWith('notes::')) {
+            this._approved.delete(`notes::${key}`);
+        }
     }
 
     // ------------------------------------------------------------------
