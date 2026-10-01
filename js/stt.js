@@ -290,9 +290,15 @@ class STTAdapter {
      * Stop listening. Works even while a session is still coming up
      * (`onstart` has not fired yet) — the session is torn down instead of
      * being allowed to go live after Stop (Stage 1A race fix).
+     * Idempotent while a session is already stopping (`onend` pending):
+     * duplicate `stop()` calls do not issue another browser `recognition.stop()`
+     * request or prematurely clear the session's active state.
      */
     stop() {
         if (!this._recognition || !this._sessionActive) {
+            return;
+        }
+        if (this.isStopping() || (this._currentSession && (this._currentSession.stopped || this._currentSession.ended))) {
             return;
         }
 

@@ -614,6 +614,9 @@ console.log('17) Production Conversation + STT integration: session-bound confir
         static instances = [];
         static delayOnEnd = false;
         static throwOnStart = false;
+        static throwOnDuplicateStop = true;
+        static throwOnFirstStop = false;
+        static deferOnStart = false;
         constructor() {
             MockSpeechRecognition.instances.push(this);
             this.continuous = false;
@@ -622,6 +625,7 @@ console.log('17) Production Conversation + STT integration: session-bound confir
             this.maxAlternatives = 1;
             this._live = false;
             this._stopping = false;
+            this.stopCallCount = 0;
         }
         start() {
             if (MockSpeechRecognition.throwOnStart) {
@@ -630,9 +634,18 @@ console.log('17) Production Conversation + STT integration: session-bound confir
             if (this._live) throw new Error('InvalidStateError: already started');
             this._live = true;
             this._stopping = false;
-            if (this.onstart) this.onstart();
+            if (!MockSpeechRecognition.deferOnStart && this.onstart) {
+                this.onstart();
+            }
         }
         stop() {
+            this.stopCallCount += 1;
+            if (this._stopping && MockSpeechRecognition.throwOnDuplicateStop) {
+                throw new Error('InvalidStateError: duplicate stop() while already stopping');
+            }
+            if (MockSpeechRecognition.throwOnFirstStop) {
+                throw new Error('InvalidStateError: genuine stop() failure');
+            }
             if (!this._live) return;
             if (MockSpeechRecognition.delayOnEnd) {
                 this._stopping = true;
@@ -1084,6 +1097,138 @@ console.log('17) Production Conversation + STT integration: session-bound confir
     recG.userSays('approve');
     check('18c: retried session resolves prompt G cleanly',
         (await pPromptG) === true && permissions.hasPending() === false);
+
+    console.log('19) Idempotent STT stop during delayed onend and confirmation supersede');
+
+    // 19a — Mock throws if recognition.stop() is called twice while onend is delayed.
+    //       Superseding Prompt H1 with Prompt H2 triggers both permissions.onResolved
+    //       and permissions.onPrompt (each calling stt.stop()), plus explicit repeated
+    //       stt.stop() calls. Verify recognition.stop() is called only once, the old
+    //       session stays active until its actual onend, no new session starts early,
+    //       and stale results from the old session cannot approve or cancel Prompt H2.
+    await delay(250);
+    const pPromptH1 = permissions.requestConfirmation({
+        title: 'Prompt H1',
+        message: 'Confirm action H1',
+        action: 'action H1'
+    });
+    const metaH1 = permissions.getPendingMeta();
+    flushUtterances();
+    await delay(350);
+    const recH1 = lastRecognition();
+    check('19a: recH1 is active and bound to prompt H1',
+        stt.isListening() === true && stt.isBoundToConfirmation(metaH1.id) === true);
+
+    MockSpeechRecognition.delayOnEnd = true;
+    MockSpeechRecognition.throwOnDuplicateStop = true;
+    const instancesBeforeH2 = MockSpeechRecognition.instances.length;
+
+    // Supersede Prompt H1 with Prompt H2: permissions.onResolved and permissions.onPrompt
+    // both call stt.stop() before recH1's asynchronous onend fires.
+    const pPromptH2 = permissions.requestConfirmation({
+        title: 'Prompt H2',
+        message: 'Confirm action H2',
+        action: 'action H2'
+    });
+    const metaH2 = permissions.getPendingMeta();
+
+    // Also invoke stt.stop() repeatedly while recH1 is stopping
+    stt.stop();
+    stt.stop();
+
+    check('19a: repeated stt.stop() calls issued only one browser recognition.stop() request',
+        recH1.stopCallCount === 1);
+    check('19a: duplicate stop requests did not mark recH1 ended or clear its active state',
+        (await pPromptH1) === false &&
+        stt.hasActiveSession() === true &&
+        stt.isListening() === true &&
+        stt.isStopping() === true &&
+        stt._currentSession?.ended === false);
+
+    // Finish speaking Prompt H2 and wait past the 300ms _startListening window
+    // while recH1's onend is STILL delayed
+    flushUtterances();
+    await delay(350);
+    check('19a: old session recH1 remains the only session until its actual onend fires',
+        MockSpeechRecognition.instances.length === instancesBeforeH2 &&
+        lastRecognition() === recH1 &&
+        stt.hasActiveSession() === true &&
+        stt.isStopping() === true &&
+        stt.isBoundToConfirmation(metaH2.id) === false);
+
+    // Stale results from recH1 while stopping cannot approve or cancel Prompt H2
+    answerVoiceCalls.length = 0;
+    recH1.deliverFinalResult('approve');
+    recH1.deliverFinalResult('cancel');
+    check('19a: stale results from stopping recH1 cannot approve or cancel prompt H2',
+        answerVoiceCalls.length === 2 &&
+        answerVoiceCalls[0].expectedPrompt === metaH1.id &&
+        answerVoiceCalls[0].result === null &&
+        answerVoiceCalls[1].expectedPrompt === metaH1.id &&
+        answerVoiceCalls[1].result === null &&
+        permissions.hasPending() === true &&
+        permissions.getPendingMeta().id === metaH2.id);
+
+    // Deliver the actual onend for recH1; only now may the new confirmation session start
+    MockSpeechRecognition.delayOnEnd = false;
+    recH1.finishStop();
+    await delay(350);
+    const recH2 = lastRecognition();
+    check('19a: new confirmation session recH2 starts only after recH1 onend and binds to prompt H2',
+        MockSpeechRecognition.instances.length === instancesBeforeH2 + 1 &&
+        recH2 !== recH1 &&
+        stt.isListening() === true &&
+        stt.isStopping() === false &&
+        stt.isBoundToConfirmation(metaH2.id) === true);
+
+    // Stale results from recH1 after recH2 is live still cannot approve or cancel Prompt H2
+    answerVoiceCalls.length = 0;
+    recH1.deliverFinalResult('approve');
+    recH1.deliverFinalResult('cancel');
+    check('19a: stale results from old recH1 after recH2 started still cannot resolve prompt H2',
+        answerVoiceCalls.length === 2 &&
+        answerVoiceCalls[0].expectedPrompt === metaH1.id &&
+        answerVoiceCalls[0].result === null &&
+        answerVoiceCalls[1].expectedPrompt === metaH1.id &&
+        answerVoiceCalls[1].result === null &&
+        permissions.hasPending() === true &&
+        permissions.getPendingMeta().id === metaH2.id);
+
+    // Resolve Prompt H2 with its own bound session recH2
+    recH2.userSays('approve');
+    check('19a: recH2 resolves prompt H2 normally',
+        (await pPromptH2) === true && permissions.hasPending() === false);
+
+    // 19b — Preserve existing behavior for a session that has not started capturing
+    //       audio (onstart not yet fired) and for genuine first-call stop failures
+    await delay(250);
+    MockSpeechRecognition.deferOnStart = true;
+    const startedPreCapture = stt.start({ generation: 999, listenEpoch: 999, isConfirmation: false, confirmationPromptId: null });
+    const recPreCapture = lastRecognition();
+    check('19b: pre-capture session is active but not yet listening before onstart',
+        startedPreCapture === true && stt.hasActiveSession() === true && stt.isListening() === false);
+    stt.stop();
+    MockSpeechRecognition.deferOnStart = false;
+    check('19b: stopping a session before onstart immediately clears active state',
+        recPreCapture.stopCallCount === 1 &&
+        stt.hasActiveSession() === false &&
+        stt.isListening() === false &&
+        stt.isStopping() === false);
+
+    // Genuine stop failure on the first recognition.stop() call clears state safely
+    const startedGenuineFail = stt.start({ generation: 1000, listenEpoch: 1000, isConfirmation: false, confirmationPromptId: null });
+    const recGenuineFail = lastRecognition();
+    check('19b: session started before genuine stop failure test',
+        startedGenuineFail === true && stt.isListening() === true);
+    MockSpeechRecognition.throwOnFirstStop = true;
+    stt.stop();
+    MockSpeechRecognition.throwOnFirstStop = false;
+    recGenuineFail._live = false;
+    check('19b: genuine stop() failure marks session ended and clears active flags',
+        recGenuineFail.stopCallCount === 1 &&
+        stt.hasActiveSession() === false &&
+        stt.isListening() === false &&
+        stt.isStopping() === false);
 
     permissions.answerVoice = originalAnswerVoice;
     conversation.stop();
