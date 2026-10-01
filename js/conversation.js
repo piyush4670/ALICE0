@@ -63,7 +63,10 @@ class ConversationManager {
         this._confirmationActive = false;
         this._confirmationPromptId = null;
         this._listeningConfirmationId = null;
+        this._pendingListenPromptId = null;
+        this._pendingConfirmationRestartId = null;
         this._listenEpoch = 0;
+        this._pendingListenEpoch = -1;
         this._activeListenEpoch = -1;
 
         // Part 7A: minimal deterministic turn lifecycle
@@ -86,6 +89,9 @@ class ConversationManager {
     _bumpGeneration() {
         this._generation += 1;
         this._listenEpoch += 1;
+        this._pendingListenEpoch = -1;
+        this._pendingListenPromptId = null;
+        this._pendingConfirmationRestartId = null;
         return this._generation;
     }
 
@@ -100,6 +106,8 @@ class ConversationManager {
         this._isListening = false;
         this._listenPending = false;
         this._listeningConfirmationId = null;
+        this._pendingListenPromptId = null;
+        this._pendingConfirmationRestartId = null;
         state.setVoiceState('isListening', false);
         state.setVoiceState('isWakeDetectionRunning', false);
     }
@@ -165,8 +173,11 @@ class ConversationManager {
             this._confirmationActive = true;
             this._confirmationPromptId = promptId;
             this._listeningConfirmationId = null;
+            this._pendingListenPromptId = null;
+            this._pendingConfirmationRestartId = null;
             this._listenEpoch += 1;
-            if (stt.isListening() || stt.hasActiveSession()) {
+            this._pendingListenEpoch = -1;
+            if (this._isListening || stt.isListening() || stt.hasActiveSession()) {
                 stt.stop();
             }
             const prompt = `${meta.title}. ${meta.message} Say "approve" to continue, or "cancel" to stop.`;
@@ -182,8 +193,15 @@ class ConversationManager {
             if (resolvedId === undefined || this._listeningConfirmationId === resolvedId) {
                 this._listeningConfirmationId = null;
             }
+            if (resolvedId === undefined || this._pendingListenPromptId === resolvedId) {
+                this._pendingListenPromptId = null;
+            }
+            if (resolvedId === undefined || this._pendingConfirmationRestartId === resolvedId) {
+                this._pendingConfirmationRestartId = null;
+            }
             this._listenEpoch += 1;
-            if (stt.isListening() || stt.hasActiveSession()) {
+            this._pendingListenEpoch = -1;
+            if (this._isListening || stt.isListening() || stt.hasActiveSession()) {
                 stt.stop();
             }
             // Once the answer has been processed, resume wake detection if
@@ -230,8 +248,13 @@ class ConversationManager {
         });
 
         stt.onEnd(() => {
-            this._listenPending = false;
+            const hasInFlightListenSetup = this._listenPending && this._pendingListenEpoch === this._listenEpoch;
+            if (!hasInFlightListenSetup) {
+                this._listenPending = false;
+                this._pendingListenPromptId = null;
+            }
             this._isListening = false;
+            this._listeningConfirmationId = null;
             state.setVoiceState('isListening', false);
             if (!this._isActive) return;
             // Drop back to READY only if we still own the lifecycle status.
@@ -239,6 +262,24 @@ class ConversationManager {
             if (state.getVoiceState().status === VOICE_STATUS.LISTENING) {
                 this._setStatus(VOICE_STATUS.READY);
                 this._clearVoiceOwnedAliceState();
+            }
+
+            // If a confirmation prompt finished speaking while the previous
+            // STT session was still shutting down (waiting for this async
+            // `onend` callback), start the confirmation's bound listener now.
+            if (
+                !this._stopped &&
+                this._confirmationActive &&
+                this._confirmationPromptId !== null &&
+                permissions.hasPending() &&
+                permissions.getPendingMeta()?.id === this._confirmationPromptId &&
+                this._pendingConfirmationRestartId === this._confirmationPromptId &&
+                !hasInFlightListenSetup &&
+                !tts.isSpeaking()
+            ) {
+                const targetPromptId = this._confirmationPromptId;
+                this._pendingConfirmationRestartId = null;
+                this._startListening(targetPromptId);
             }
         });
 
@@ -498,6 +539,22 @@ class ConversationManager {
     }
 
     /**
+     * Check whether the given confirmation prompt ID is bound to the active,
+     * non-stopping STT session.
+     */
+    _isConfirmationBoundToActiveSession(promptId) {
+        if (typeof promptId !== 'number' || !Number.isInteger(promptId) || promptId <= 0) {
+            return false;
+        }
+        return Boolean(
+            this._isListening &&
+            this._listeningConfirmationId === promptId &&
+            !stt.isStopping() &&
+            stt.isBoundToConfirmation(promptId)
+        );
+    }
+
+    /**
      * Start listening for user speech. The actual LISTENING status is only
      * set by the STT onStart event — never optimistically (Stage 1A).
      * While the session is being set up, `_listenPending` tells TTS-end and
@@ -505,22 +562,64 @@ class ConversationManager {
      */
     async _startListening(confirmationPromptId = undefined) {
         if (!this._isActive) return false;
-        if (this._isListening) return true;
 
         // Capture the exact confirmation state and prompt ID that were active
         // when this listening session was requested — never read a newer
         // prompt ID after the pre-listen delay or when a result arrives.
-        const isConfirmationListen = this._confirmationActive;
+        const isConfirmationListen = this._confirmationActive || confirmationPromptId !== undefined;
         const boundPromptId = isConfirmationListen
             ? (confirmationPromptId !== undefined ? confirmationPromptId : this._confirmationPromptId)
             : null;
 
+        if (isConfirmationListen) {
+            if (!this._confirmationActive || boundPromptId === null || this._confirmationPromptId !== boundPromptId) {
+                return false;
+            }
+            // Only report success if the active, non-stopping STT session is
+            // already bound to this exact confirmation prompt ID.
+            if (this._isConfirmationBoundToActiveSession(boundPromptId)) {
+                this._pendingConfirmationRestartId = null;
+                return true;
+            }
+            // Avoid starting duplicate setups for the same confirmation prompt.
+            if (
+                this._listenPending &&
+                this._pendingListenEpoch === this._listenEpoch &&
+                this._pendingListenPromptId === boundPromptId
+            ) {
+                return false;
+            }
+            // If a previous session is still live or waiting for its async
+            // `onend` teardown, stop it (if not already stopping) and record
+            // the pending confirmation prompt ID before the delay so `stt.onEnd`
+            // knows which confirmation needs a bound listener.
+            if (this._isListening || stt.isListening() || stt.hasActiveSession()) {
+                this._pendingConfirmationRestartId = boundPromptId;
+                if (!stt.isStopping()) {
+                    stt.stop();
+                }
+            }
+        } else {
+            if (this._isListening && !stt.isStopping() && stt.hasActiveSession() && this._listeningConfirmationId === null) {
+                return true;
+            }
+            if (
+                this._listenPending &&
+                this._pendingListenEpoch === this._listenEpoch &&
+                this._pendingListenPromptId === null
+            ) {
+                return false;
+            }
+        }
+
         this._listenPending = true;
+        this._pendingListenPromptId = isConfirmationListen ? boundPromptId : null;
         this._currentTranscript = '';
         state.clearTranscript();
 
         const token = this._generation;
         const epoch = ++this._listenEpoch;
+        this._pendingListenEpoch = epoch;
 
         // Small delay before starting
         await delay(300);
@@ -528,21 +627,62 @@ class ConversationManager {
         // Stop/disable, stopListening(), or a confirmation prompt change
         // occurred during the delay — do not start STT or rebind.
         if (token !== this._generation || epoch !== this._listenEpoch) {
-            this._listenPending = false;
+            if (this._pendingListenEpoch === epoch) {
+                this._listenPending = false;
+                this._pendingListenPromptId = null;
+            }
             return false;
         }
         if (isConfirmationListen) {
-            if (!this._confirmationActive || boundPromptId === null || this._confirmationPromptId !== boundPromptId) {
+            if (
+                !this._confirmationActive ||
+                boundPromptId === null ||
+                this._confirmationPromptId !== boundPromptId ||
+                !permissions.hasPending() ||
+                permissions.getPendingMeta()?.id !== boundPromptId
+            ) {
                 this._listenPending = false;
+                this._pendingListenPromptId = null;
+                if (this._pendingConfirmationRestartId === boundPromptId) {
+                    this._pendingConfirmationRestartId = null;
+                }
                 return false;
             }
-        } else if (this._confirmationActive) {
-            this._listenPending = false;
-            return false;
-        }
-        if (this._isListening || stt.hasActiveSession()) {
-            this._listenPending = false;
-            return true;
+            if (this._isConfirmationBoundToActiveSession(boundPromptId)) {
+                this._listenPending = false;
+                this._pendingListenPromptId = null;
+                this._pendingConfirmationRestartId = null;
+                return true;
+            }
+            // Previous STT session is still active or waiting for its delayed
+            // `onend` callback — never report success prematurely. Queue this
+            // prompt ID so `stt.onEnd` starts the bound confirmation listener
+            // as soon as teardown completes.
+            if (this._isListening || stt.isListening() || stt.hasActiveSession() || stt.isStopping()) {
+                this._listenPending = false;
+                this._pendingListenPromptId = null;
+                this._pendingConfirmationRestartId = boundPromptId;
+                if (!stt.isStopping()) {
+                    stt.stop();
+                }
+                return false;
+            }
+        } else {
+            if (this._confirmationActive) {
+                this._listenPending = false;
+                this._pendingListenPromptId = null;
+                return false;
+            }
+            if (this._isListening && !stt.isStopping() && stt.hasActiveSession() && this._listeningConfirmationId === null) {
+                this._listenPending = false;
+                this._pendingListenPromptId = null;
+                return true;
+            }
+            if (this._isListening || stt.isListening() || stt.hasActiveSession() || stt.isStopping()) {
+                this._listenPending = false;
+                this._pendingListenPromptId = null;
+                return false;
+            }
         }
 
         const started = stt.start({
@@ -551,18 +691,56 @@ class ConversationManager {
             isConfirmation: isConfirmationListen,
             confirmationPromptId: boundPromptId
         });
-        if (started) {
+        const boundOk = started && (
+            !isConfirmationListen ||
+            (stt.isBoundToConfirmation(boundPromptId) && !stt.isStopping())
+        );
+
+        if (boundOk) {
             this._listenToken = this._generation;
             this._activeListenEpoch = epoch;
             this._listeningConfirmationId = isConfirmationListen ? boundPromptId : null;
+            this._pendingListenPromptId = null;
+            if (isConfirmationListen && this._pendingConfirmationRestartId === boundPromptId) {
+                this._pendingConfirmationRestartId = null;
+            }
             // stt.onStart clears _listenPending once the session is live
             // (it also fires synchronously on some platforms).
             this._listenPending = !stt.isListening();
+            return true;
+        }
+
+        this._listenPending = false;
+        this._pendingListenPromptId = null;
+        this._listeningConfirmationId = null;
+        if (started) {
+            stt.stop();
+        }
+        if (isConfirmationListen) {
+            state.logActivity(
+                'Could not start voice confirmation listener — prompt remains pending (retry voice or use the Approve / Cancel buttons)',
+                'warning'
+            );
         } else {
-            this._listenPending = false;
             state.logActivity('Could not start speech recognition', 'warning');
         }
-        return started;
+        return false;
+    }
+
+    /**
+     * Explicitly retry starting the voice listener for the currently pending
+     * confirmation prompt when an earlier start attempt could not complete.
+     * Never auto-approves; if voice cannot start, the prompt stays pending
+     * for another retry or manual Approve/Cancel button interaction.
+     */
+    async retryConfirmationListening() {
+        const pendingMeta = permissions.getPendingMeta();
+        if (!pendingMeta || typeof pendingMeta.id !== 'number') {
+            return false;
+        }
+        this._confirmationActive = true;
+        this._confirmationPromptId = pendingMeta.id;
+        return this._startListening(pendingMeta.id);
     }
 
     /**
@@ -571,7 +749,10 @@ class ConversationManager {
      */
     stopListening() {
         this._listenEpoch += 1;
+        this._pendingListenEpoch = -1;
         this._listeningConfirmationId = null;
+        this._pendingListenPromptId = null;
+        this._pendingConfirmationRestartId = null;
         this._listenPending = false;
         if (this._isListening || stt.hasActiveSession()) {
             stt.stop();
@@ -980,7 +1161,10 @@ class ConversationManager {
         }
 
         state.set('aliceState', CONFIG.states.SPEAKING);
-        tts.speak(text);
+        const spoken = tts.speak(text);
+        if (!spoken && skill === 'confirmation' && this._isActive && !this._stopped && this._confirmationActive) {
+            this._startListening(this._confirmationPromptId);
+        }
     }
 
     /**

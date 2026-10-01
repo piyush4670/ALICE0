@@ -204,6 +204,33 @@ class STTAdapter {
     }
 
     /**
+     * Check if the current session has been asked to stop but its
+     * asynchronous `onend` event has not fired yet.
+     */
+    isStopping() {
+        return Boolean(this._currentSession && this._currentSession.stopped && !this._currentSession.ended);
+    }
+
+    /**
+     * Check if a confirmation prompt ID is currently bound to an active,
+     * non-stopping STT session.
+     */
+    isBoundToConfirmation(promptId) {
+        if (typeof promptId !== 'number' || !Number.isInteger(promptId) || promptId <= 0) {
+            return false;
+        }
+        return Boolean(
+            (this._isListening || this._sessionActive) &&
+            this._currentSession &&
+            !this._currentSession.stopped &&
+            !this._currentSession.ended &&
+            this._currentSession.context &&
+            this._currentSession.context.isConfirmation === true &&
+            this._currentSession.context.confirmationPromptId === promptId
+        );
+    }
+
+    /**
      * Start listening. Optional `sessionContext` is frozen and bound to this
      * specific recognition session so late events from an older session can
      * never inherit a newer session's context.
@@ -219,7 +246,7 @@ class STTAdapter {
 
         // Guard on the full session window (start requested → onend), not
         // just on `_isListening`, so we never double-start a session.
-        if (this._sessionActive || this._isListening) {
+        if (this._sessionActive || this._isListening || this.isStopping()) {
             return false;
         }
 
@@ -269,6 +296,7 @@ class STTAdapter {
             return;
         }
 
+        const wasListening = this._isListening;
         if (this._currentSession) {
             this._currentSession.stopped = true;
         }
@@ -276,8 +304,23 @@ class STTAdapter {
         try {
             this._recognition.stop();
         } catch (error) {
-            // Ignore - may not be running
-        } finally {
+            if (this._currentSession) {
+                this._currentSession.ended = true;
+            }
+            this._sessionActive = false;
+            this._isListening = false;
+            return;
+        }
+
+        // If recognition had not even started capturing audio yet (`onstart`
+        // never fired), stop() may not emit `onend`; clear state immediately.
+        // If it WAS live (`wasListening`), `onend` clears `_sessionActive` and
+        // `_isListening` when teardown completes (which may be synchronous or
+        // asynchronous).
+        if (!wasListening && (!this._currentSession || !this._currentSession.ended)) {
+            if (this._currentSession) {
+                this._currentSession.ended = true;
+            }
             this._sessionActive = false;
             this._isListening = false;
         }

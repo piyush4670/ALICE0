@@ -612,6 +612,8 @@ console.log('17) Production Conversation + STT integration: session-bound confir
 
     class MockSpeechRecognition {
         static instances = [];
+        static delayOnEnd = false;
+        static throwOnStart = false;
         constructor() {
             MockSpeechRecognition.instances.push(this);
             this.continuous = false;
@@ -619,19 +621,36 @@ console.log('17) Production Conversation + STT integration: session-bound confir
             this.lang = 'en-US';
             this.maxAlternatives = 1;
             this._live = false;
+            this._stopping = false;
         }
         start() {
+            if (MockSpeechRecognition.throwOnStart) {
+                throw new Error('InvalidStateError: simulated start failure');
+            }
             if (this._live) throw new Error('InvalidStateError: already started');
             this._live = true;
+            this._stopping = false;
             if (this.onstart) this.onstart();
         }
         stop() {
             if (!this._live) return;
+            if (MockSpeechRecognition.delayOnEnd) {
+                this._stopping = true;
+                return;
+            }
             this._live = false;
+            this._stopping = false;
+            if (this.onend) this.onend();
+        }
+        finishStop() {
+            if (!this._live && !this._stopping) return;
+            this._live = false;
+            this._stopping = false;
             if (this.onend) this.onend();
         }
         abort() {
             this._live = false;
+            this._stopping = false;
         }
         userSays(text) {
             if (!this._live) throw new Error('userSays on a dead recognition session');
@@ -881,6 +900,190 @@ console.log('17) Production Conversation + STT integration: session-bound confir
     recD2.userSays('cancel');
     check('17c: recD2 resolves prompt D normally',
         (await pPromptD) === false && permissions.hasPending() === false);
+
+    console.log('18) Confirmation listening restart race: delayed STT onend vs TTS completion');
+
+    // 18a — Stopping the previous confirmation STT session delays its onend callback
+    //       until AFTER the new confirmation prompt has finished speaking and after
+    //       its initial _startListening delay window.
+    const pPromptE1 = permissions.requestConfirmation({
+        title: 'Prompt E1',
+        message: 'Confirm action E1',
+        action: 'action E1'
+    });
+    const metaE1 = permissions.getPendingMeta();
+    flushUtterances();
+    await delay(350);
+    const recE1 = lastRecognition();
+    check('18a: recE1 is active and bound to prompt E1',
+        stt.isListening() === true && stt.isBoundToConfirmation(metaE1.id) === true);
+
+    // Delay onend when Prompt E2 stops recE1
+    MockSpeechRecognition.delayOnEnd = true;
+    const pPromptE2 = permissions.requestConfirmation({
+        title: 'Prompt E2',
+        message: 'Confirm action E2',
+        action: 'action E2'
+    });
+    const metaE2 = permissions.getPendingMeta();
+    check('18a: prompt E1 superseded by E2 while recE1 onend is still pending',
+        (await pPromptE1) === false &&
+        metaE2.id !== metaE1.id &&
+        conversation.isListening() === true &&
+        stt.isStopping() === true &&
+        stt.isBoundToConfirmation(metaE2.id) === false);
+
+    // Prompt E2 finishes speaking while recE1 is STILL waiting for its async onend
+    const instancesBeforeE2SpeakEnd = MockSpeechRecognition.instances.length;
+    flushUtterances(); // triggers _startListening(metaE2.id) from tts.onEnd
+    await delay(350);  // wait past the 300ms pre-listen delay while recE1.onend is still delayed
+    check('18a: _startListening did not claim E2 was bound or create a duplicate session while recE1 was stopping',
+        MockSpeechRecognition.instances.length === instancesBeforeE2SpeakEnd &&
+        stt.isBoundToConfirmation(metaE2.id) === false &&
+        conversation._isConfirmationBoundToActiveSession(metaE2.id) === false &&
+        permissions.hasPending() === true &&
+        permissions.getPendingMeta().id === metaE2.id);
+
+    // Old result from recE1 arrives before recE1.onend fires — must not resolve Prompt E2
+    answerVoiceCalls.length = 0;
+    recE1.deliverFinalResult('approve');
+    check('18a: old result from stopping recE1 carries metaE1.id and cannot resolve prompt E2',
+        answerVoiceCalls.length === 1 &&
+        answerVoiceCalls[0].expectedPrompt === metaE1.id &&
+        answerVoiceCalls[0].result === null &&
+        permissions.hasPending() === true &&
+        permissions.getPendingMeta().id === metaE2.id);
+
+    // Now recE1 finally delivers its delayed onend callback
+    MockSpeechRecognition.delayOnEnd = false;
+    recE1.finishStop();
+    await delay(350); // wait for the queued confirmation restart triggered by stt.onEnd
+    const recE2 = lastRecognition();
+    check('18a: delayed onend starts exactly one new session recE2 bound to prompt E2',
+        MockSpeechRecognition.instances.length === instancesBeforeE2SpeakEnd + 1 &&
+        recE2 !== recE1 &&
+        stt.isListening() === true &&
+        stt.isStopping() === false &&
+        stt.isBoundToConfirmation(metaE2.id) === true &&
+        conversation._isConfirmationBoundToActiveSession(metaE2.id) === true &&
+        conversation._listeningConfirmationId === metaE2.id);
+
+    // Another late result from recE1 after recE2 is live still cannot resolve Prompt E2
+    answerVoiceCalls.length = 0;
+    recE1.deliverFinalResult('cancel');
+    check('18a: late cancel from old recE1 is still rejected after recE2 is live',
+        answerVoiceCalls.length === 1 &&
+        answerVoiceCalls[0].expectedPrompt === metaE1.id &&
+        answerVoiceCalls[0].result === null &&
+        permissions.hasPending() === true);
+
+    // Prompt E2 resolves with its own bound session recE2
+    answerVoiceCalls.length = 0;
+    recE2.userSays('approve');
+    check('18a: recE2 resolves prompt E2 with metaE2.id',
+        (await pPromptE2) === true &&
+        answerVoiceCalls.length === 1 &&
+        answerVoiceCalls[0].expectedPrompt === metaE2.id &&
+        answerVoiceCalls[0].result === true &&
+        permissions.hasPending() === false);
+
+    // 18b — Stopping a previous non-confirmation STT session delays its onend until
+    //       after the confirmation prompt finishes speaking (onend arrives mid-delay)
+    await delay(250); // let post-resolution wake timer settle
+    const startedCmd = await conversation._startListening();
+    const recCmd = lastRecognition();
+    check('18b: non-confirmation command session recCmd is active',
+        startedCmd === true &&
+        stt.isListening() === true &&
+        stt.getSessionContext()?.isConfirmation === false &&
+        stt.getSessionContext()?.confirmationPromptId === null);
+
+    MockSpeechRecognition.delayOnEnd = true;
+    const pPromptF = permissions.requestConfirmation({
+        title: 'Prompt F',
+        message: 'Confirm action F',
+        action: 'action F'
+    });
+    const metaF = permissions.getPendingMeta();
+    const instancesBeforeF = MockSpeechRecognition.instances.length;
+
+    // Prompt F finishes speaking while recCmd is still stopping (onend delayed)
+    flushUtterances();
+    await delay(80); // inside _startListening(metaF.id)'s 300ms delay
+
+    // Old command session delivers a late "approve" before its onend fires
+    answerVoiceCalls.length = 0;
+    recCmd.deliverFinalResult('approve');
+    check('18b: late speech from stopping command session has null prompt id and cannot resolve prompt F',
+        answerVoiceCalls.length === 1 &&
+        answerVoiceCalls[0].expectedPrompt === null &&
+        answerVoiceCalls[0].result === null &&
+        permissions.hasPending() === true);
+
+    // Now recCmd's delayed onend fires while _startListening(metaF.id) is in its 300ms delay
+    MockSpeechRecognition.delayOnEnd = false;
+    recCmd.finishStop();
+    await delay(300); // let the in-flight _startListening(metaF.id) complete
+
+    const recF = lastRecognition();
+    check('18b: exactly one new session recF started and bound to prompt F (no duplicate session)',
+        MockSpeechRecognition.instances.length === instancesBeforeF + 1 &&
+        recF !== recCmd &&
+        stt.isListening() === true &&
+        stt.isBoundToConfirmation(metaF.id) === true &&
+        conversation._isConfirmationBoundToActiveSession(metaF.id) === true);
+
+    recF.userSays('cancel');
+    check('18b: recF resolves prompt F to false',
+        (await pPromptF) === false && permissions.hasPending() === false);
+
+    // 18c — _startListening() returns false when previous session is still stopping
+    //       or when STT fails to start; prompt stays pending (never auto-approved)
+    //       and retryConfirmationListening() recovers cleanly
+    await delay(250);
+    await conversation._startListening();
+    const recG0 = lastRecognition();
+    check('18c: pre-prompt session recG0 is active', stt.isListening() === true);
+
+    MockSpeechRecognition.delayOnEnd = true;
+    const pPromptG = permissions.requestConfirmation({
+        title: 'Prompt G',
+        message: 'Confirm action G',
+        action: 'action G'
+    });
+    const metaG = permissions.getPendingMeta();
+    pendingUtterances.splice(0); // hold TTS so we can test direct _startListening return value
+
+    const prematureStartResult = await conversation._startListening(metaG.id);
+    check('18c: _startListening returns false (never true) while previous session is still stopping',
+        prematureStartResult === false &&
+        stt.isBoundToConfirmation(metaG.id) === false &&
+        permissions.hasPending() === true);
+
+    // Now simulate STT start failure when recG0's onend fires
+    MockSpeechRecognition.delayOnEnd = false;
+    MockSpeechRecognition.throwOnStart = true;
+    recG0.finishStop();
+    await delay(350);
+    check('18c: when STT cannot start, prompt G remains pending and is never auto-approved',
+        stt.isListening() === false &&
+        stt.isBoundToConfirmation(metaG.id) === false &&
+        permissions.hasPending() === true &&
+        permissions.getPendingMeta().id === metaG.id);
+
+    // Clear the start failure and use retryConfirmationListening() fallback path
+    MockSpeechRecognition.throwOnStart = false;
+    const retryResult = await conversation.retryConfirmationListening();
+    const recG = lastRecognition();
+    check('18c: retryConfirmationListening() starts a new session bound to prompt G',
+        retryResult === true &&
+        stt.isListening() === true &&
+        stt.isBoundToConfirmation(metaG.id) === true &&
+        conversation._isConfirmationBoundToActiveSession(metaG.id) === true);
+
+    recG.userSays('approve');
+    check('18c: retried session resolves prompt G cleanly',
+        (await pPromptG) === true && permissions.hasPending() === false);
 
     permissions.answerVoice = originalAnswerVoice;
     conversation.stop();
