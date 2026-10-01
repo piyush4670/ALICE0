@@ -257,19 +257,76 @@ console.log('4) A stale approval cannot delete another note');
     await p2;
 }
 
-console.log('5) Re-check that target still exists and is the intended note before deleting');
+console.log('5) Target snapshot & change detection while confirmation is pending');
 {
     clearAllNotes();
-    const targetNote = await addDistinctNote('Ephemeral Note', 'will disappear before delete');
+    const note = await addDistinctNote('Original Title', 'Original content to delete');
 
-    // Manually delete the note from memory behind the scenes
-    memory.deleteNote(targetNote.id);
-
+    // 5a) Direct execution: note modified while confirmation is pending
     promptCount = 0;
-    autoMode = 'approve';
-    const resMissing = await skillManager.executeByName('notes', 'delete note about Ephemeral Note');
-    check('missing note target aborts deletion safely', resMissing.success === false);
-    check('error indicates note not found', /no note found|couldn't find/i.test(resMissing.error));
+    autoMode = null; // manual confirmation
+    const pendingDelete = notes.execute('delete note 1');
+    await new Promise((r) => setTimeout(r, 10)); // let prompt open
+    check('confirmation prompt opened for deletion', permissions.hasPending() === true);
+    const promptMeta = permissions.getPendingMeta();
+
+    // Update the same note ID while confirmation is pending
+    await new Promise((r) => setTimeout(r, 2));
+    memory.updateNote(note.id, 'Updated Title', 'Modified content after prompt opened');
+    check('note was updated while confirmation was pending', memory.getNote(note.id).title === 'Updated Title');
+
+    // Approve the old prompt
+    const approved = permissions.answer(true, promptMeta.id);
+    check('old prompt was approved', approved === true);
+
+    // Verify deletion was aborted
+    const res = await pendingDelete;
+    check('deletion of modified note was aborted', res.success === false);
+    check('error explains that note changed and needs to be reviewed again',
+        /changed.*review/i.test(res.error));
+    check('updated note remains intact in memory', memory.getNote(note.id) !== undefined);
+    check('updated note title preserved', memory.getNote(note.id).title === 'Updated Title');
+    check('updated note content preserved', memory.getNote(note.id).content === 'Modified content after prompt opened');
+
+    // 5b) Gateway execution: note modified while confirmation is pending in executeByName
+    clearAllNotes();
+    const noteGw = await addDistinctNote('Gateway Original', 'Gateway content');
+    promptCount = 0;
+    autoMode = null; // manual confirmation
+    const pendingGwDelete = skillManager.executeByName('notes', 'delete note 1');
+    await new Promise((r) => setTimeout(r, 10)); // let prompt open
+    check('gateway confirmation prompt opened', permissions.hasPending() === true);
+    const promptGwMeta = permissions.getPendingMeta();
+
+    // Update the note while confirmation is pending
+    await new Promise((r) => setTimeout(r, 2));
+    memory.updateNote(noteGw.id, 'Gateway Updated', 'Updated content');
+
+    // Approve the old prompt
+    permissions.answer(true, promptGwMeta.id);
+    const resGw = await pendingGwDelete;
+    check('gateway deletion of modified note was aborted', resGw.success === false);
+    check('error explains that note changed and needs review', /changed.*review/i.test(resGw.error));
+    check('updated gateway note remains intact', memory.getNote(noteGw.id) !== undefined);
+    check('updated gateway note title preserved', memory.getNote(noteGw.id).title === 'Gateway Updated');
+
+    // 5c) Note disappeared while confirmation was pending
+    clearAllNotes();
+    const ephemNote = await addDistinctNote('Ephemeral Note', 'will disappear before delete');
+    promptCount = 0;
+    autoMode = null;
+    const pendingEphem = notes.execute('delete note 1');
+    await new Promise((r) => setTimeout(r, 10));
+    const ephemMeta = permissions.getPendingMeta();
+
+    // Manually delete the note while confirmation is pending
+    memory.deleteNote(ephemNote.id);
+
+    // Approve the old prompt
+    permissions.answer(true, ephemMeta.id);
+    const resEphem = await pendingEphem;
+    check('deletion of disappeared note handled safely', resEphem.success === false);
+    check('error indicates note disappeared/not found', /disappeared|couldn't find|no note found/i.test(resEphem.error));
 }
 
 console.log('6) Existing note creation, searching, listing, and valid deletion behavior remain intact');

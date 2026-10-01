@@ -105,8 +105,16 @@ export const notes = {
 
         const target = this._parseDeletionTarget(input);
         if (target.type === 'number' || target.type === 'keyword_single') {
+            this._snapshot = {
+                id: target.note.id,
+                title: target.note.title,
+                content: target.note.content,
+                created: target.note.created,
+                updated: target.note.updated
+            };
             return `delete::${target.note.id}`;
         }
+        this._snapshot = null;
         return null;
     },
 
@@ -272,9 +280,21 @@ export const notes = {
         // Unambiguous target (number or keyword_single)
         const noteToDelete = target.note;
 
-        // Re-check that the target still exists and is the intended note before deleting it
+        // Snapshot of the note presented for confirmation
+        let snapshot = (this._snapshot && this._snapshot.id === noteToDelete.id)
+            ? this._snapshot
+            : {
+                id: noteToDelete.id,
+                title: noteToDelete.title,
+                content: noteToDelete.content,
+                created: noteToDelete.created,
+                updated: noteToDelete.updated
+            };
+
+        // Re-check that the target still exists and is the intended note before prompting/deleting
         const current = memory.getNote(noteToDelete.id);
         if (!current || current.id !== noteToDelete.id || current.title !== noteToDelete.title) {
+            this._snapshot = null;
             return {
                 success: false,
                 error: `I couldn't find note "${noteToDelete.title}" to delete.`
@@ -287,12 +307,30 @@ export const notes = {
         if (CONFIG?.permissions?.enabled) {
             const isApproved = permissions.isApproved(approvalKey);
             if (!isApproved) {
+                // Refresh snapshot immediately before prompting
+                const prePrompt = memory.getNote(noteToDelete.id);
+                if (!prePrompt) {
+                    this._snapshot = null;
+                    return {
+                        success: false,
+                        error: `I couldn't find note "${noteToDelete.title}" to delete.`
+                    };
+                }
+                snapshot = {
+                    id: prePrompt.id,
+                    title: prePrompt.title,
+                    content: prePrompt.content,
+                    created: prePrompt.created,
+                    updated: prePrompt.updated
+                };
+
                 const approved = await permissions.requestConfirmation({
                     title: 'Confirmation required',
                     message: 'destructive action (cannot be easily undone)',
                     action: input.slice(0, 300)
                 });
                 if (!approved) {
+                    this._snapshot = null;
                     return {
                         success: false,
                         cancelled: true,
@@ -301,6 +339,38 @@ export const notes = {
                 }
             }
         }
+
+        // After approval, re-fetch the note by ID and verify that it still matches
+        // the exact snapshot presented for confirmation before deleting it.
+        const postApprovalNote = memory.getNote(noteToDelete.id);
+        if (!postApprovalNote) {
+            this._snapshot = null;
+            permissions.consumeApproval(approvalKey);
+            return {
+                success: false,
+                error: `Note "${snapshot.title}" disappeared while confirmation was pending and needs to be reviewed again.`
+            };
+        }
+
+        const isUnchanged =
+            postApprovalNote.id === snapshot.id &&
+            postApprovalNote.title === snapshot.title &&
+            postApprovalNote.content === snapshot.content &&
+            postApprovalNote.created === snapshot.created &&
+            postApprovalNote.updated === snapshot.updated;
+
+        if (!isUnchanged) {
+            this._snapshot = null;
+            // Never delete a changed note using an approval for its earlier state.
+            permissions.consumeApproval(approvalKey);
+            permissions.consumeApproval(`notes::${String(input ?? '').trim().toLowerCase()}`);
+            return {
+                success: false,
+                error: `Note "${snapshot.title}" changed while confirmation was pending and needs to be reviewed again.`
+            };
+        }
+
+        this._snapshot = null;
 
         // Perform safe deletion
         const deleted = memory.deleteNote(noteToDelete.id);
