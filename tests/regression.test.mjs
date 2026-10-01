@@ -412,6 +412,33 @@ check('stale approval cannot delete another note',
     rStale.success === false && memory.getNote(ambig1.id) !== undefined);
 memory.deleteNote(ambig1.id);
 
+// Safe memory forgetting regression: ambiguous targets, missing targets,
+// and approvals bound to the resolved memory key (Part 10.3)
+autoMode = 'approve';
+memory.remember('car color', 'blue');
+memory.remember('car model', 'Model 3');
+const rMemAmbig = await skillManager.executeByName('memory', 'forget my car');
+check('multiple memory matches cause no deletion and request clarification',
+    rMemAmbig.success === false && /didn't delete anything/i.test(rMemAmbig.error) &&
+    memory.hasMemory('car color') === true && memory.hasMemory('car model') === true);
+
+const rMemZero = await skillManager.executeByName('memory', 'forget my NonExistentMemoryXYZ');
+check('zero memory matches cause no deletion',
+    rMemZero.success === false && memory.hasMemory('car color') === true && memory.hasMemory('car model') === true);
+
+promptCount = 0;
+autoMode = 'approve';
+const rMemDel = await skillManager.executeByName('memory', 'forget my car color');
+check('unambiguous memory deletion succeeds when approved',
+    rMemDel.success === true && memory.hasMemory('car color') === false && memory.hasMemory('car model') === true);
+
+promptCount = 0;
+autoMode = 'deny';
+const rMemStale = await skillManager.executeByName('memory', 'forget my car');
+check('a stale approval cannot delete another memory',
+    rMemStale.success === false && memory.hasMemory('car model') === true);
+memory.forget('car model');
+
 // ============================================================================
 console.log('5) SKILLS');
 
