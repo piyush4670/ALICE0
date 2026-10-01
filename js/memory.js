@@ -123,6 +123,16 @@ class MemorySystem {
     }
 
     /**
+     * Get a single memory record by key ({ key, value, created, updated }),
+     * or null when it does not exist. Used by the memory skill to re-fetch
+     * the exact target before it is deleted (Part 10.3).
+     */
+    getMemory(key) {
+        const data = this._longTerm.get(String(key ?? '').toLowerCase());
+        return data ? { key: String(key).toLowerCase(), ...data } : null;
+    }
+
+    /**
      * Check if a memory exists
      */
     hasMemory(key) {
