@@ -324,8 +324,17 @@ export const memorySkill = {
         const target = this._parseForgetTarget(input);
         const confirmed = this._confirmedSnapshot(input);
 
+        // Every exit below invalidates the approvals that could apply to this
+        // request: the legacy sentence key, the memory the user confirmed
+        // (whenever one was shown), and the memory the request resolves to.
+        const invalidate = (...keys) => this._invalidateApprovals(
+            input,
+            [confirmed && confirmed.key, ...keys]
+        );
+
         if (target.type === 'invalid' || target.type === 'empty') {
             this._snapshot = null;
+            invalidate();
             return {
                 success: false,
                 error: 'What would you like me to forget? Please specify what to delete.'
@@ -333,18 +342,16 @@ export const memorySkill = {
         }
 
         if (target.type === 'none') {
-            // The memory the user was just asked about can vanish before the
-            // confirmation is answered — say so instead of a generic miss.
-            const vanished = (confirmed && confirmed.key === String(target.keyword).toLowerCase())
-                ? confirmed.key
-                : null;
             this._snapshot = null;
-            if (vanished) {
-                permissions.consumeApproval(`memory::forget::${vanished}`);
-                permissions.consumeApproval(this._legacyApprovalKey(input));
+            invalidate();
+            // The memory the user was asked about can vanish before the
+            // confirmation is answered — say so instead of a generic miss.
+            // This is decided from the confirmed target, never by comparing
+            // the search phrase with a memory key.
+            if (confirmed) {
                 return {
                     success: false,
-                    error: `The memory "${vanished}" disappeared while confirmation was pending, so I didn't delete anything. Please review the request again.`
+                    error: `The memory "${confirmed.key}" disappeared while confirmation was pending, so I didn't delete anything. Please review the request again.`
                 };
             }
             return {
@@ -361,6 +368,9 @@ export const memorySkill = {
                 `Please say which one to forget using its exact key:\n${formatted}`;
 
             this._snapshot = null;
+            // A request that turned ambiguous invalidates the approval for the
+            // previously confirmed target and for every memory it now matches.
+            invalidate(...target.matches.map(m => String(m.key).toLowerCase()));
             return {
                 success: false,
                 error: clarifyMsg,
@@ -377,15 +387,13 @@ export const memorySkill = {
         // Unambiguous target: either an exact key or a single search hit.
         const entry = target.entry;
         const key = String(entry.key).toLowerCase();
-        const approvalKey = `memory::forget::${key}`;
+        const approvalKey = this._approvalKeyFor(key);
 
         // Never fall back to another memory: if the request no longer resolves
         // to the memory the user confirmed, nothing is deleted.
         if (confirmed && confirmed.key !== key) {
             this._snapshot = null;
-            permissions.consumeApproval(`memory::forget::${confirmed.key}`);
-            permissions.consumeApproval(approvalKey);
-            permissions.consumeApproval(this._legacyApprovalKey(input));
+            invalidate(key);
             return {
                 success: false,
                 error: `This request no longer matches the memory you confirmed (${confirmed.key}), so I didn't delete anything. Please review the request again.`
@@ -401,8 +409,7 @@ export const memorySkill = {
         const current = memory.getMemory(key);
         if (!current) {
             this._snapshot = null;
-            permissions.consumeApproval(approvalKey);
-            permissions.consumeApproval(this._legacyApprovalKey(input));
+            invalidate(key);
             return {
                 success: false,
                 error: confirmed
@@ -422,6 +429,7 @@ export const memorySkill = {
                 const prePrompt = memory.getMemory(key);
                 if (!prePrompt) {
                     this._snapshot = null;
+                    invalidate(key);
                     return {
                         success: false,
                         error: `I couldn't find a memory called "${key}" to delete.`
@@ -436,6 +444,7 @@ export const memorySkill = {
                 });
                 if (!approved) {
                     this._snapshot = null;
+                    invalidate(key);
                     return {
                         success: false,
                         cancelled: true,
@@ -451,8 +460,7 @@ export const memorySkill = {
         const postApproval = memory.getMemory(key);
         if (!postApproval) {
             this._snapshot = null;
-            permissions.consumeApproval(approvalKey);
-            permissions.consumeApproval(this._legacyApprovalKey(input));
+            invalidate(key);
             return {
                 success: false,
                 error: `The memory "${key}" disappeared while confirmation was pending, so I didn't delete anything. Please review the request again.`
@@ -462,8 +470,7 @@ export const memorySkill = {
         if (!this._matchesSnapshot(postApproval, snapshot)) {
             this._snapshot = null;
             // Never delete a changed memory using an approval for its earlier state.
-            permissions.consumeApproval(approvalKey);
-            permissions.consumeApproval(this._legacyApprovalKey(input));
+            invalidate(key);
             return {
                 success: false,
                 error: `The memory "${key}" changed while confirmation was pending, so I didn't delete anything. Please review the request again.`
@@ -474,6 +481,7 @@ export const memorySkill = {
 
         const deleted = memory.forget(key);
         if (!deleted) {
+            invalidate(key);
             return {
                 success: false,
                 error: `Failed to forget "${key}".`
@@ -481,8 +489,7 @@ export const memorySkill = {
         }
 
         // Consume the approval so it cannot delete another memory later.
-        permissions.consumeApproval(approvalKey);
-        permissions.consumeApproval(this._legacyApprovalKey(input));
+        invalidate(key);
 
         return {
             success: true,
@@ -498,6 +505,31 @@ export const memorySkill = {
      */
     _legacyApprovalKey(input) {
         return `memory::${String(input ?? '').trim().toLowerCase()}`;
+    },
+
+    /**
+     * Approval key for a single, target-bound forget operation.
+     */
+    _approvalKeyFor(key) {
+        return `memory::forget::${String(key ?? '').toLowerCase()}`;
+    },
+
+    /**
+     * Invalidate every approval memo that could apply to this request:
+     * the legacy sentence-based key, the memory the user confirmed (when one
+     * was shown), and the memory/memory list the request currently resolves
+     * to. Called by every abort and clarification path, and after a completed
+     * deletion, so a stale approval can never delete a memory later.
+     *
+     * Whether a target approval exists is decided by the snapshots the skill
+     * itself captured — never by comparing the raw search phrase with a key.
+     */
+    _invalidateApprovals(input, keys = []) {
+        permissions.consumeApproval(this._legacyApprovalKey(input));
+        for (const key of keys) {
+            if (typeof key !== 'string' || !key) continue;
+            permissions.consumeApproval(this._approvalKeyFor(key));
+        }
     },
 
     /**

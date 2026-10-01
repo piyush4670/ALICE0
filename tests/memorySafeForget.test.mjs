@@ -456,5 +456,135 @@ console.log('9) Existing remember, recall, and search behavior remains intact');
         skillManager.matchSkill('forget my car').skill?.name === 'memory');
 }
 
+console.log('10) A partial-value target that disappears during confirmation cannot be deleted by a retry');
+{
+    clearAllMemories();
+    memory.remember('dog', 'Rex');
+
+    // "Rex" is a VALUE match, so the resolved key ("dog") differs from the
+    // search phrase — approvals must still be invalidated for that key.
+    promptCount = 0;
+    autoMode = null; // manual confirmation
+    const pending = skillManager.executeByName('memory', 'forget my Rex');
+    await sleep(10);
+    check('confirmation prompt opened for the partial-value target', permissions.hasPending() === true);
+    const meta = permissions.getPendingMeta();
+
+    // The target disappears while confirmation is pending
+    memory.forget('dog');
+    check('the target memory is gone while confirmation is pending', memory.hasMemory('dog') === false);
+
+    permissions.answer(true, meta.id);
+    const res = await pending;
+    check('the vanished target is reported as disappeared, not deleted silently',
+        res.success === false && /disappeared/i.test(res.error));
+
+    // Recreate the memory and retry the same sentence inside the memo window
+    memory.remember('dog', 'Rex');
+    check('the memory was recreated', memory.recall('dog') === 'Rex');
+
+    promptCount = 0;
+    autoMode = 'deny';
+    const retry = await skillManager.executeByName('memory', 'forget my Rex');
+    check('the retry requires a fresh approval (it prompts again)', promptCount === 1);
+    check('the stale approval did not delete the recreated memory',
+        retry.success === false && memory.recall('dog') === 'Rex');
+
+    // The same retry, freshly approved, still works
+    promptCount = 0;
+    autoMode = 'approve';
+    const approvedRetry = await skillManager.executeByName('memory', 'forget my Rex');
+    check('a freshly approved retry deletes the recreated memory',
+        approvedRetry.success === true && memory.hasMemory('dog') === false);
+}
+
+console.log('11) A target that becomes ambiguous during confirmation cannot be deleted by a retry');
+{
+    clearAllMemories();
+    memory.remember('dog', 'Rex');
+
+    promptCount = 0;
+    autoMode = null; // manual confirmation
+    const pending = skillManager.executeByName('memory', 'forget my Rex');
+    await sleep(10);
+    check('confirmation prompt opened before the request became ambiguous', permissions.hasPending() === true);
+    const meta = permissions.getPendingMeta();
+
+    // A second memory starts matching the very same request
+    memory.remember('dog name', 'Rexy');
+    check('the request became ambiguous while confirmation was pending', memory.search('Rex').length === 2);
+
+    permissions.answer(true, meta.id);
+    const res = await pending;
+    check('an ambiguous target deletes nothing', res.success === false && /didn't delete anything/i.test(res.error));
+    check('both memories are intact', memory.recall('dog') === 'Rex' && memory.recall('dog name') === 'Rexy');
+
+    // A retry that resolves to the previously confirmed key must be re-gated
+    promptCount = 0;
+    autoMode = 'deny';
+    const retryExact = await skillManager.executeByName('memory', 'forget my dog');
+    check('the previously confirmed key is re-gated, not deleted by the stale approval',
+        retryExact.success === false);
+    check('the retry prompted for a fresh approval', promptCount === 1);
+    check('the memory survived the denied retry', memory.recall('dog') === 'Rex');
+
+    // Retrying the same ambiguous sentence is gated as well
+    promptCount = 0;
+    autoMode = 'deny';
+    const retryAmbig = await skillManager.executeByName('memory', 'forget my Rex');
+    check('the ambiguous retry is gated too', retryAmbig.success === false);
+    check('the ambiguous retry prompted for a fresh approval', promptCount === 1);
+    check('neither retry deleted anything', memory.getAllMemories().length === 2);
+
+    // A clarified request, freshly approved, still deletes exactly one memory
+    promptCount = 0;
+    autoMode = 'approve';
+    const clarified = await skillManager.executeByName('memory', 'forget my dog name');
+    check('a clarified, freshly approved deletion succeeds', clarified.success === true);
+    check('only the named memory was deleted',
+        memory.hasMemory('dog name') === false && memory.recall('dog') === 'Rex');
+}
+
+console.log('12) Existing safe deletion and recall behavior remain intact');
+{
+    clearAllMemories();
+    memory.remember('favorite color', 'green');
+    memory.remember('car color', 'blue');
+    memory.remember('car model', 'Model 3');
+
+    // Exact-key deletion still deletes only the named memory
+    promptCount = 0;
+    autoMode = 'approve';
+    const exact = await skillManager.executeByName('memory', 'forget my favorite color');
+    check('exact-key deletion still succeeds when approved', exact.success === true);
+    check('only the named memory was deleted',
+        memory.hasMemory('favorite color') === false && memory.hasMemory('car color') === true);
+    check('exact-key deletion prompted once', promptCount === 1);
+
+    // An unambiguous partial match still deletes the single match
+    promptCount = 0;
+    autoMode = 'approve';
+    const single = await skillManager.executeByName('memory', 'forget my blue');
+    check('a single partial match still deletes when approved', single.success === true);
+    check('the single matching memory was deleted', memory.hasMemory('car color') === false);
+    check('the other memory is untouched', memory.recall('car model') === 'Model 3');
+
+    // An ambiguous request still deletes nothing
+    memory.remember('car year', '2019');
+    promptCount = 0;
+    autoMode = 'approve';
+    const ambiguous = await skillManager.executeByName('memory', 'forget my car');
+    check('an ambiguous request still deletes nothing',
+        ambiguous.success === false && memory.getAllMemories().length === 2);
+
+    // Recall is unchanged
+    const recall = await memorySkill.execute('do you remember my car model');
+    check('recall still returns the stored value', recall.success === true && /Model 3/.test(recall.result));
+    const fuzzy = await memorySkill.execute('tell me about my car modl');
+    check('fuzzy recall still resolves the closest memory', fuzzy.success === true && /Model 3/.test(fuzzy.result));
+    check('the stored memory is intact after recalls', memory.recall('car model') === 'Model 3');
+    check('the second stored memory is intact too', memory.recall('car year') === '2019');
+}
+
 console.log(`\nResult: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
