@@ -560,6 +560,330 @@ console.log('16) Late speech cannot approve an already-cancelled or different ac
     const validSecondCancel = permissions.answerVoice('cancel', secondMeta.id);
     check('second prompt resolves normally with its own id',
         validSecondCancel === false && (await pSecond) === false && permissions.hasPending() === false);
+
+    // 16c — Empty or invalid expected-prompt metadata is rejected
+    const pInvalidMeta = permissions.requestConfirmation({ title: 'InvalidMeta', message: 'Check metadata', action: 'delete critical file' });
+    const validMeta = permissions.getPendingMeta();
+    const INVALID_EXPECTED_PROMPTS = [
+        null,
+        {},
+        { title: 'InvalidMeta' },
+        { message: 'Check metadata' },
+        { id: null },
+        { id: undefined },
+        { id: NaN },
+        { id: 0 },
+        { id: -1 },
+        { id: '1' },
+        { id: validMeta.id, action: 'wrong action' },
+        { action: '' },
+        { action: '   ' },
+        { action: null },
+        { action: 123 },
+        '',
+        '   ',
+        NaN,
+        0,
+        -5,
+        false,
+        true
+    ];
+    for (const invalidExpected of INVALID_EXPECTED_PROMPTS) {
+        const approveAttempt = permissions.answerVoice('approve', invalidExpected);
+        const cancelAttempt = permissions.answerVoice('cancel', invalidExpected);
+        const uiAttempt = permissions.answer(true, invalidExpected);
+        check(`invalid expectedPrompt (${JSON.stringify(invalidExpected)}) is rejected`,
+            approveAttempt === null &&
+            cancelAttempt === null &&
+            uiAttempt === false &&
+            permissions.hasPending() === true &&
+            permissions.getPendingMeta().id === validMeta.id);
+    }
+    check('prompt resolves cleanly once valid expectedPrompt id is supplied',
+        permissions.answerVoice('cancel', validMeta.id) === false &&
+        (await pInvalidMeta) === false &&
+        permissions.hasPending() === false);
+}
+
+console.log('17) Production Conversation + STT integration: session-bound confirmation prompt IDs');
+
+{
+    const delay = (ms) => new Promise(r => setTimeout(r, ms));
+
+    class MockSpeechRecognition {
+        static instances = [];
+        constructor() {
+            MockSpeechRecognition.instances.push(this);
+            this.continuous = false;
+            this.interimResults = true;
+            this.lang = 'en-US';
+            this.maxAlternatives = 1;
+            this._live = false;
+        }
+        start() {
+            if (this._live) throw new Error('InvalidStateError: already started');
+            this._live = true;
+            if (this.onstart) this.onstart();
+        }
+        stop() {
+            if (!this._live) return;
+            this._live = false;
+            if (this.onend) this.onend();
+        }
+        abort() {
+            this._live = false;
+        }
+        userSays(text) {
+            if (!this._live) throw new Error('userSays on a dead recognition session');
+            this.deliverFinalResult(text);
+            this.stop();
+        }
+        deliverFinalResult(text) {
+            const results = [[{ transcript: text, confidence: 1 }]];
+            results[0].isFinal = true;
+            if (this.onresult) this.onresult({ resultIndex: 0, results });
+        }
+    }
+
+    const pendingUtterances = [];
+    globalThis.SpeechSynthesisUtterance = class {
+        constructor(text) {
+            this.text = text;
+            this.voice = null;
+            this.rate = 1;
+            this.pitch = 1;
+            this.volume = 1;
+            this.lang = 'en-US';
+        }
+    };
+    globalThis.window.speechSynthesis.speak = (u) => { pendingUtterances.push(u); };
+    globalThis.window.speechSynthesis.cancel = () => {
+        const list = pendingUtterances.splice(0);
+        for (const u of list) {
+            if (u.onerror) u.onerror({ error: 'canceled' });
+            if (u.onend) u.onend();
+        }
+    };
+    globalThis.window.speechSynthesis.getVoices = () => [{ name: 'Mock Voice', lang: 'en-US' }];
+    globalThis.window.SpeechRecognition = MockSpeechRecognition;
+    globalThis.requestAnimationFrame = () => 1;
+    globalThis.cancelAnimationFrame = () => {};
+    globalThis.window.AudioContext = class {
+        createMediaStreamSource() { return { connect() {} }; }
+        createAnalyser() {
+            return {
+                fftSize: 0,
+                smoothingTimeConstant: 0,
+                frequencyBinCount: 8,
+                getByteFrequencyData(arr) { for (let i = 0; i < arr.length; i++) arr[i] = 0; }
+            };
+        }
+        close() {}
+    };
+    Object.defineProperty(globalThis, 'navigator', {
+        value: {
+            mediaDevices: {
+                getUserMedia: async () => ({
+                    getTracks: () => [{ stop() {} }]
+                })
+            },
+            permissions: undefined
+        },
+        configurable: true
+    });
+
+    const { stt } = await import('../js/stt.js');
+    const { conversation } = await import('../js/conversation.js');
+
+    const flushUtterances = () => {
+        while (pendingUtterances.length > 0) {
+            const u = pendingUtterances.shift();
+            if (u.onstart) u.onstart();
+            if (u.onend) u.onend();
+        }
+    };
+    const lastRecognition = () => MockSpeechRecognition.instances[MockSpeechRecognition.instances.length - 1];
+
+    // Record every answerVoice call made through the production pipeline
+    const answerVoiceCalls = [];
+    const originalAnswerVoice = permissions.answerVoice.bind(permissions);
+    permissions.answerVoice = (text, expectedPrompt) => {
+        const result = originalAnswerVoice(text, expectedPrompt);
+        answerVoiceCalls.push({ text, expectedPrompt, result });
+        return result;
+    };
+
+    const enabled = await conversation.enableVoice();
+    check('voice enabled for conversation/STT integration test', enabled.started === true && conversation.isActive() === true);
+
+    // 17a — Cancelled prompt A cannot be approved by delayed STT speech after A is cancelled
+    memory.addNote('ConvCancelNote', 'must survive delayed STT approval');
+    const execCancelA = skillManager.executeByName('notes', 'delete my note about ConvCancelNote');
+    await delay(20);
+    const metaCancelA = permissions.getPendingMeta();
+    check('17a: prompt A opened via gateway', permissions.hasPending() === true && metaCancelA !== null);
+
+    flushUtterances(); // finish speaking confirmation prompt A -> triggers _startListening(metaCancelA.id)
+    await delay(350);  // wait for the 300ms pre-listen delay
+    const recCancelA = lastRecognition();
+    check('17a: STT is listening and bound to prompt A id',
+        stt.isListening() === true && stt.getSessionContext()?.confirmationPromptId === metaCancelA.id);
+
+    // Cancel prompt A via UI before delayed speech arrives
+    permissions.answer(false);
+    const resCancelA = await execCancelA;
+    check('17a: prompt A cancelled and action denied', resCancelA.success === false && permissions.hasPending() === false);
+
+    // Delayed final recognition result from recCancelA arrives after cancellation
+    answerVoiceCalls.length = 0;
+    recCancelA.deliverFinalResult('approve');
+    await delay(20);
+    check('17a: delayed STT result passed prompt A id and was rejected',
+        answerVoiceCalls.length === 1 &&
+        answerVoiceCalls[0].expectedPrompt === metaCancelA.id &&
+        answerVoiceCalls[0].result === null);
+    check('17a: cancelled action remains denied and note survives', noteGone('ConvCancelNote') === false);
+
+    // 17b — Prompt A superseded by Prompt B: delayed final recognition result from A
+    //       cannot approve or cancel B, while B resolves normally with its own result
+    const pPromptA = permissions.requestConfirmation({
+        title: 'Prompt A',
+        message: 'Confirm action A',
+        action: 'action A'
+    });
+    const metaA = permissions.getPendingMeta();
+    flushUtterances(); // finish speaking prompt A -> triggers _startListening(metaA.id)
+    await delay(350);
+    const recA = lastRecognition();
+    check('17b: recA is listening for prompt A',
+        stt.isListening() === true && stt.getSessionContext()?.confirmationPromptId === metaA.id);
+
+    // Prompt B supersedes Prompt A
+    const pPromptB = permissions.requestConfirmation({
+        title: 'Prompt B',
+        message: 'Confirm action B',
+        action: 'action B'
+    });
+    const metaB = permissions.getPendingMeta();
+    check('17b: prompt A resolved to false on supersede and prompt B is pending',
+        (await pPromptA) === false && permissions.hasPending() === true && metaB.id !== metaA.id);
+
+    // Delayed final result from recA arrives BEFORE prompt B starts listening
+    answerVoiceCalls.length = 0;
+    recA.deliverFinalResult('approve');
+    check('17b: delayed "approve" from recA (before recB starts) passed metaA.id and was rejected',
+        answerVoiceCalls.length === 1 &&
+        answerVoiceCalls[0].expectedPrompt === metaA.id &&
+        answerVoiceCalls[0].result === null &&
+        permissions.hasPending() === true &&
+        permissions.getPendingMeta().id === metaB.id);
+
+    // Now let prompt B finish speaking and start its own listening session (recB)
+    flushUtterances();
+    await delay(350);
+    const recB = lastRecognition();
+    check('17b: recB is a distinct session bound to prompt B id',
+        recB !== recA && stt.isListening() === true && stt.getSessionContext()?.confirmationPromptId === metaB.id);
+
+    // Delayed final results ("approve" and "cancel") from recA arrive AFTER recB is live
+    answerVoiceCalls.length = 0;
+    recA.deliverFinalResult('approve');
+    recA.deliverFinalResult('cancel');
+    check('17b: delayed "approve" and "cancel" from recA (while recB is live) still carry metaA.id and cannot resolve B',
+        answerVoiceCalls.length === 2 &&
+        answerVoiceCalls[0].expectedPrompt === metaA.id &&
+        answerVoiceCalls[0].result === null &&
+        answerVoiceCalls[1].expectedPrompt === metaA.id &&
+        answerVoiceCalls[1].result === null &&
+        permissions.hasPending() === true &&
+        permissions.getPendingMeta().id === metaB.id);
+
+    // Prompt B resolves normally when recB delivers its own final result
+    answerVoiceCalls.length = 0;
+    recB.userSays('approve');
+    const resolvedB = await pPromptB;
+    check('17b: recB result carries metaB.id and approves prompt B',
+        answerVoiceCalls.length === 1 &&
+        answerVoiceCalls[0].expectedPrompt === metaB.id &&
+        answerVoiceCalls[0].result === true &&
+        resolvedB === true &&
+        permissions.hasPending() === false);
+
+    // 17c — Stopping and restarting listening does not rebind an old result to a newer prompt
+    const pPromptC = permissions.requestConfirmation({
+        title: 'Prompt C',
+        message: 'Confirm action C',
+        action: 'action C'
+    });
+    const metaC = permissions.getPendingMeta();
+    flushUtterances();
+    await delay(350);
+    const recC = lastRecognition();
+    check('17c: recC started for prompt C',
+        stt.isListening() === true && stt.getSessionContext()?.confirmationPromptId === metaC.id);
+
+    // Stop and restart listening while Prompt C is active, then supersede with Prompt D during the 300ms restart delay
+    conversation.stopListening();
+    const restartUnderC = conversation._startListening(); // bound to metaC.id at call time
+    await delay(50); // inside the 300ms delay
+
+    const pPromptD = permissions.requestConfirmation({
+        title: 'Prompt D',
+        message: 'Confirm action D',
+        action: 'action D'
+    });
+    const metaD = permissions.getPendingMeta();
+    check('17c: prompt C superseded by prompt D during restart window',
+        (await pPromptC) === false && metaD.id !== metaC.id);
+
+    await delay(320); // let restartUnderC's 300ms timer expire
+    check('17c: restart initiated under prompt C aborted and did not bind to prompt D',
+        (await restartUnderC) === false && stt.isListening() === false && conversation._listeningConfirmationId === null);
+
+    // Start listening for Prompt D (entering 300ms delay), then stop and restart again;
+    // an old result from recC arriving during the restart must still carry metaC.id, not metaD.id
+    flushUtterances(); // triggers _startListening(metaD.id)
+    await delay(350);
+    const recD1 = lastRecognition();
+    check('17c: recD1 started for prompt D',
+        stt.isListening() === true && stt.getSessionContext()?.confirmationPromptId === metaD.id);
+
+    conversation.stopListening();
+    const restartD = conversation._startListening();
+    // While restartD is still in its 300ms delay, deliver delayed result from recC and from stopped recD1
+    answerVoiceCalls.length = 0;
+    recC.deliverFinalResult('approve');
+    recD1.deliverFinalResult('approve');
+    check('17c: neither recC nor stopped recD1 can approve prompt D after stopListening()',
+        answerVoiceCalls.length === 2 &&
+        answerVoiceCalls[0].expectedPrompt === metaC.id &&
+        answerVoiceCalls[0].result === null &&
+        answerVoiceCalls[1].result === null &&
+        permissions.hasPending() === true &&
+        permissions.getPendingMeta().id === metaD.id);
+
+    await delay(350); // let restartD start the new session recD2 for Prompt D
+    await restartD;
+    const recD2 = lastRecognition();
+    check('17c: restarted session recD2 is live for prompt D',
+        recD2 !== recD1 && stt.isListening() === true && stt.getSessionContext()?.confirmationPromptId === metaD.id);
+
+    // Delayed result from old recC still carries metaC.id even after recD2 is live
+    answerVoiceCalls.length = 0;
+    recC.deliverFinalResult('approve');
+    check('17c: recC still carries metaC.id after stop/restart and is rejected',
+        answerVoiceCalls.length === 1 &&
+        answerVoiceCalls[0].expectedPrompt === metaC.id &&
+        answerVoiceCalls[0].result === null &&
+        permissions.hasPending() === true);
+
+    // Now resolve Prompt D with recD2
+    recD2.userSays('cancel');
+    check('17c: recD2 resolves prompt D normally',
+        (await pPromptD) === false && permissions.hasPending() === false);
+
+    permissions.answerVoice = originalAnswerVoice;
+    conversation.stop();
 }
 
 console.log(`\nResult: ${pass} passed, ${fail} failed`);

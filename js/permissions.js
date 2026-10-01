@@ -448,26 +448,48 @@ class PermissionManager {
 
     /**
      * Verify that a pending confirmation exists and, when an expected prompt
-     * identifier/metadata is supplied, that it still refers to the same
-     * pending confirmation (preventing late answers from resolving a
-     * different or superseded action).
+     * identifier/metadata is supplied, that it carries a valid identifier and
+     * still refers to the same pending confirmation (preventing late answers
+     * from resolving a different or superseded action).
      */
     _matchesPending(expectedPrompt) {
         if (!this._pending || this._pending.resolved) return false;
-        if (expectedPrompt === undefined || expectedPrompt === null) return true;
+        if (expectedPrompt === undefined) return true;
+        if (expectedPrompt === null) return false;
+
         const currentMeta = this._pending.meta;
         if (typeof expectedPrompt === 'number') {
-            return currentMeta.id === expectedPrompt;
+            return Number.isInteger(expectedPrompt) && expectedPrompt > 0 && currentMeta.id === expectedPrompt;
         }
         if (typeof expectedPrompt === 'string') {
-            return currentMeta.action === scrubForDisplay(expectedPrompt);
+            const trimmed = expectedPrompt.trim();
+            if (!trimmed) return false;
+            return Boolean(currentMeta.action) && currentMeta.action === scrubForDisplay(trimmed);
         }
         if (typeof expectedPrompt === 'object') {
-            if (expectedPrompt.id !== undefined && currentMeta.id !== expectedPrompt.id) {
+            const hasIdProp = expectedPrompt.id !== undefined;
+            const hasValidId = typeof expectedPrompt.id === 'number' &&
+                Number.isInteger(expectedPrompt.id) &&
+                expectedPrompt.id > 0;
+            const hasActionProp = expectedPrompt.action !== undefined;
+            const hasValidAction = typeof expectedPrompt.action === 'string' &&
+                expectedPrompt.action.trim().length > 0;
+
+            if (hasIdProp && !hasValidId) {
                 return false;
             }
-            if (expectedPrompt.action !== undefined && currentMeta.action !== scrubForDisplay(expectedPrompt.action)) {
+            if (!hasValidId && !hasValidAction) {
                 return false;
+            }
+            if (hasValidId && currentMeta.id !== expectedPrompt.id) {
+                return false;
+            }
+            if (hasActionProp) {
+                if (typeof expectedPrompt.action !== 'string') return false;
+                if (!hasValidId && !hasValidAction) return false;
+                if (currentMeta.action !== scrubForDisplay(expectedPrompt.action)) {
+                    return false;
+                }
             }
             return true;
         }
