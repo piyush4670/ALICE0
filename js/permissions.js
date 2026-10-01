@@ -28,17 +28,138 @@ import { state } from './state.js';
 import { CONFIG } from './config.js';
 import { redact } from './utils.js';
 
-// Words/phrases that mean "approve"
-const APPROVE_WORDS = [
-    'yes', 'yeah', 'yep', 'approve', 'ok', 'okay', 'okie', 'go ahead',
-    'confirm', 'proceed', 'do it', 'sure', 'please do', 'accepted'
-];
+// Explicit, unambiguous phrases that mean "approve" (matched against the
+// full normalized transcript — never via substring search).
+export const APPROVE_PHRASES = Object.freeze([
+    'yes',
+    'yeah',
+    'yep',
+    'approve',
+    'approved',
+    'i approve',
+    'please approve',
+    'yes approve',
+    'ok',
+    'okay',
+    'okie',
+    'go ahead',
+    'yes go ahead',
+    'ok go ahead',
+    'okay go ahead',
+    'confirm',
+    'confirmed',
+    'i confirm',
+    'please confirm',
+    'yes confirm',
+    'proceed',
+    'please proceed',
+    'yes proceed',
+    'do it',
+    'yes do it',
+    'sure',
+    'please do',
+    'yes please',
+    'yes please do',
+    'accept',
+    'accepted'
+]);
 
-// Words/phrases that mean "cancel"
-const CANCEL_WORDS = [
-    'no', 'nope', 'cancel', 'stop', 'abort', 'don\'t', 'dont', 'never mind',
-    'hold on', 'wait', 'not now', 'no thanks', 'decline', 'reject'
-];
+// Explicit, unambiguous phrases that mean "cancel" (separate allowlist,
+// matched against the full normalized transcript).
+export const CANCEL_PHRASES = Object.freeze([
+    'no',
+    'nope',
+    'cancel',
+    'cancelled',
+    'canceled',
+    'cancel it',
+    'cancel that',
+    'please cancel',
+    'no cancel',
+    'stop',
+    'please stop',
+    'no stop',
+    'abort',
+    'no abort',
+    "don't",
+    'dont',
+    'do not',
+    'never',
+    'never mind',
+    'nevermind',
+    'hold on',
+    'wait',
+    'not now',
+    'no thanks',
+    'no thank you',
+    'decline',
+    'declined',
+    'i decline',
+    'reject',
+    'rejected',
+    'i reject',
+    'deny',
+    'denied',
+    'i deny'
+]);
+
+const APPROVE_ALLOWLIST = new Set(APPROVE_PHRASES);
+const CANCEL_ALLOWLIST = new Set(CANCEL_PHRASES);
+
+// Tokens that negate or contradict an approval — a transcript containing any
+// of these must never be interpreted as approval.
+const NEGATION_OR_CANCEL_TOKENS = new Set([
+    'no', 'nope', 'not', 'never', 'neither', 'nor',
+    "don't", 'dont', "can't", 'cant', 'cannot',
+    "won't", 'wont', "shouldn't", 'shouldnt', "wouldn't", 'wouldnt',
+    'cancel', 'cancelled', 'canceled', 'stop', 'abort',
+    'wait', 'hold', 'decline', 'declined', 'reject', 'rejected',
+    'deny', 'denied', 'disapprove', 'unapproved', 'unconfirmed', 'unsure'
+]);
+
+/**
+ * Safely normalize a voice confirmation transcript:
+ * - non-string inputs normalize to ''
+ * - unify curly apostrophes/quotes to ASCII "'"
+ * - normalize case (lowercase) and trim whitespace
+ * - strip ordinary statement punctuation (.,!;:"()[]{}- etc.)
+ * - collapse repeated whitespace
+ */
+export function normalizeConfirmationTranscript(text) {
+    if (typeof text !== 'string') return '';
+    return text
+        .replace(/[\u2018\u2019\u201B\u2032\u02BC`´]/g, "'")
+        .toLowerCase()
+        .replace(/[.,!;:"“”()[\]{}—–-]+/g, ' ')
+        .replace(/(?:^|\s)'+|'+(?=\s|$)/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
+ * Parse a voice transcript into an explicit confirmation decision:
+ * - `true`  for an explicit, unambiguous approval phrase from APPROVE_PHRASES
+ * - `false` for an explicit, unambiguous cancellation phrase from CANCEL_PHRASES
+ * - `null`  for negated, contradictory, unrelated, empty, or ambiguous speech
+ */
+export function parseVoiceConfirmation(text) {
+    if (typeof text !== 'string') return null;
+    // Questioning / uncertain intonation ('yes?', 'approve?') is ambiguous
+    if (text.includes('?')) return null;
+
+    const normalized = normalizeConfirmationTranscript(text);
+    if (!normalized) return null;
+
+    const tokens = normalized.split(' ');
+    const hasNegationOrCancel = tokens.some(t => NEGATION_OR_CANCEL_TOKENS.has(t));
+
+    const isApprove = !hasNegationOrCancel && APPROVE_ALLOWLIST.has(normalized);
+    const isCancel = CANCEL_ALLOWLIST.has(normalized);
+
+    if (isApprove && !isCancel) return true;
+    if (isCancel && !isApprove) return false;
+    return null;
+}
 
 // Destructive / outward-facing / account-level actions. Any request whose
 // text matches one of these is treated as sensitive unless a skill
@@ -254,6 +375,7 @@ class PermissionManager {
             return { allowed: true };
         }
 
+        this._approved.delete(key);
         return {
             allowed: false,
             decision: 'denied',
@@ -307,7 +429,7 @@ class PermissionManager {
                 action: scrubForDisplay(action),
                 id: ++this._promptCounter
             };
-            this._pending = { resolve, meta };
+            this._pending = { resolve, meta, resolved: false };
 
             this._showModal(meta);
 
@@ -325,31 +447,58 @@ class PermissionManager {
     }
 
     /**
+     * Verify that a pending confirmation exists and, when an expected prompt
+     * identifier/metadata is supplied, that it still refers to the same
+     * pending confirmation (preventing late answers from resolving a
+     * different or superseded action).
+     */
+    _matchesPending(expectedPrompt) {
+        if (!this._pending || this._pending.resolved) return false;
+        if (expectedPrompt === undefined || expectedPrompt === null) return true;
+        const currentMeta = this._pending.meta;
+        if (typeof expectedPrompt === 'number') {
+            return currentMeta.id === expectedPrompt;
+        }
+        if (typeof expectedPrompt === 'string') {
+            return currentMeta.action === scrubForDisplay(expectedPrompt);
+        }
+        if (typeof expectedPrompt === 'object') {
+            if (expectedPrompt.id !== undefined && currentMeta.id !== expectedPrompt.id) {
+                return false;
+            }
+            if (expectedPrompt.action !== undefined && currentMeta.action !== scrubForDisplay(expectedPrompt.action)) {
+                return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * Answer the pending confirmation from the UI.
      */
-    answer(approved) {
-        if (!this._pending) return false;
+    answer(approved, expectedPrompt = undefined) {
+        if (!this._matchesPending(expectedPrompt)) return false;
         this._resolvePending(!!approved);
         return true;
     }
 
     /**
      * Answer the pending confirmation from recognized voice text.
-     * Returns `true` if the text was recognized as approve/cancel,
-     * `null` if it was not a confirmation answer (caller should re-prompt).
+     * Returns `true` if the text was recognized as an explicit approval,
+     * `false` if recognized as an explicit cancellation, or `null` if it was
+     * not a clear confirmation answer (caller should leave pending / re-prompt)
+     * or no matching prompt is pending.
      */
-    answerVoice(text) {
-        if (!this._pending) return null;
-        const t = String(text || '').toLowerCase().trim();
+    answerVoice(text, expectedPrompt = undefined) {
+        if (!this._matchesPending(expectedPrompt)) return null;
 
-        const isApprove = APPROVE_WORDS.some(w => t === w || t.includes(w));
-        const isCancel = CANCEL_WORDS.some(w => t === w || t.includes(w));
-
-        if (isApprove && !isCancel) {
+        const decision = parseVoiceConfirmation(text);
+        if (decision === true) {
             this._resolvePending(true);
             return true;
         }
-        if (isCancel) {
+        if (decision === false) {
             this._resolvePending(false);
             return false;
         }
@@ -358,6 +507,8 @@ class PermissionManager {
 
     _resolvePending(approved) {
         const pending = this._pending;
+        if (!pending || pending.resolved) return;
+        pending.resolved = true;
         this._pending = null;
         this._hideModal();
 

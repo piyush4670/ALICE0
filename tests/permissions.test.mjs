@@ -49,7 +49,13 @@ globalThis.fetch = async () => {
 };
 
 const { skillManager } = await import('../js/skillManager.js');
-const { permissions } = await import('../js/permissions.js');
+const {
+    permissions,
+    APPROVE_PHRASES,
+    CANCEL_PHRASES,
+    normalizeConfirmationTranscript,
+    parseVoiceConfirmation
+} = await import('../js/permissions.js');
 const { agent } = await import('../js/agent.js');
 const { taskPlanner } = await import('../js/taskPlanner.js');
 const { memory } = await import('../js/memory.js');
@@ -269,6 +275,292 @@ check('secret request prompted once', promptCount === 1);
 check('denied → nothing stored', r8.success === false && memory.recall('password') === null);
 check('prompt action has the secret redacted', /REDACTED/.test(lastMeta.action) && !/hunter2/.test(lastMeta.action));
 check('prompt message has no secret', !/hunter2/.test(lastMeta.message) && !/hunter2/.test(lastMeta.title));
+
+console.log('9) Voice confirmation transcript normalization & allowlist structure');
+
+autoMode = null;
+check('APPROVE_PHRASES is a frozen non-empty allowlist',
+    Array.isArray(APPROVE_PHRASES) && APPROVE_PHRASES.length > 0 && Object.isFrozen(APPROVE_PHRASES));
+check('CANCEL_PHRASES is a frozen non-empty allowlist',
+    Array.isArray(CANCEL_PHRASES) && CANCEL_PHRASES.length > 0 && Object.isFrozen(CANCEL_PHRASES));
+check('approve and cancel allowlists are strictly disjoint',
+    APPROVE_PHRASES.every(p => !CANCEL_PHRASES.includes(p)));
+check('normalizes whitespace, case, and ordinary punctuation',
+    normalizeConfirmationTranscript('  YES, Approve!  ') === 'yes approve' &&
+    normalizeConfirmationTranscript('...Go ahead...') === 'go ahead' &&
+    normalizeConfirmationTranscript('"Confirm."') === 'confirm' &&
+    normalizeConfirmationTranscript("'Approve'") === 'approve');
+check('normalizes curly apostrophes safely',
+    normalizeConfirmationTranscript('I don\u2019t approve!') === "i don't approve");
+check('handles non-string and empty inputs safely',
+    normalizeConfirmationTranscript('') === '' &&
+    normalizeConfirmationTranscript('   ...  ') === '' &&
+    normalizeConfirmationTranscript(null) === '' &&
+    normalizeConfirmationTranscript(undefined) === '' &&
+    normalizeConfirmationTranscript(42) === '');
+
+console.log('10) Valid voice approvals resolve pending confirmation to true');
+
+const VALID_APPROVALS = [
+    'yes',
+    'yeah',
+    'yep',
+    'approve',
+    'approved',
+    'i approve',
+    'please approve',
+    'yes, approve',
+    'ok',
+    'okay',
+    'okie',
+    'go ahead',
+    'confirm',
+    'confirmed',
+    'proceed',
+    'do it',
+    'sure',
+    'please do',
+    'accepted',
+    '  YES!  ',
+    'Approve.',
+    'Okay, go ahead!'
+];
+for (const phrase of VALID_APPROVALS) {
+    const p = permissions.requestConfirmation({ title: 'Test', message: 'Confirm?', action: 'test approve' });
+    const ans = permissions.answerVoice(phrase);
+    const resolved = await p;
+    check(`valid approval "${phrase}" → true`, ans === true && resolved === true && permissions.hasPending() === false);
+}
+
+console.log('11) Valid voice cancellations resolve pending confirmation to false');
+
+const VALID_CANCELLATIONS = [
+    'no',
+    'nope',
+    'cancel',
+    'cancelled',
+    'stop',
+    'abort',
+    "don't",
+    'dont',
+    'do not',
+    'never mind',
+    'hold on',
+    'wait',
+    'not now',
+    'no thanks',
+    'no thank you',
+    'decline',
+    'reject',
+    'deny',
+    'No, cancel!',
+    '  Not now.  ',
+    'Don\u2019t!'
+];
+for (const phrase of VALID_CANCELLATIONS) {
+    const p = permissions.requestConfirmation({ title: 'Test', message: 'Confirm?', action: 'test cancel' });
+    const ans = permissions.answerVoice(phrase);
+    const resolved = await p;
+    check(`valid cancellation "${phrase}" → false`, ans === false && resolved === false && permissions.hasPending() === false);
+}
+
+console.log('12) Accidental substrings must NOT approve and leave confirmation pending');
+
+const ACCIDENTAL_SUBSTRINGS = [
+    'yesterday',
+    'yesteryear',
+    'eyes',
+    'okayish',
+    'token',
+    'book',
+    'lookup',
+    'karaoke',
+    'insure',
+    'unsure',
+    'measure',
+    'treasure',
+    'disapprove',
+    'unapproved',
+    'unconfirmed'
+];
+{
+    const p = permissions.requestConfirmation({ title: 'Test', message: 'Confirm?', action: 'substring guard' });
+    for (const word of ACCIDENTAL_SUBSTRINGS) {
+        const ans = permissions.answerVoice(word);
+        check(`substring "${word}" does not approve and stays pending`,
+            ans === null && permissions.hasPending() === true);
+    }
+    permissions.answer(false);
+    check('substring guard prompt cleanly cancelled afterwards', (await p) === false);
+}
+
+console.log('13) Negated phrases must NOT approve');
+
+const NEGATED_PHRASES = [
+    "I don't approve",
+    'I don\u2019t approve',
+    'do not approve',
+    "don't approve",
+    'not approved',
+    'never approve',
+    'I do not confirm',
+    "don't confirm",
+    'do not proceed',
+    "don't go ahead",
+    "don't do it",
+    'do not do it',
+    'not yes',
+    'not ok',
+    'not okay',
+    'not sure',
+    "I'm not sure",
+    "can't approve",
+    "won't approve"
+];
+{
+    const p = permissions.requestConfirmation({ title: 'Test', message: 'Confirm?', action: 'negation guard' });
+    for (const phrase of NEGATED_PHRASES) {
+        const ans = permissions.answerVoice(phrase);
+        check(`negation "${phrase}" never approves and leaves confirmation pending`,
+            ans === null && permissions.hasPending() === true);
+    }
+    // Verify "not now" specifically cancels rather than approving
+    const notNowAns = permissions.answerVoice('not now');
+    const resolved = await p;
+    check('"not now" cancels pending confirmation and never approves',
+        notNowAns === false && resolved === false && permissions.hasPending() === false);
+}
+
+console.log('14) Contradictory phrases must NOT approve and leave confirmation pending');
+
+const CONTRADICTORY_PHRASES = [
+    'yes no',
+    'yes or no',
+    'no or yes',
+    'yes, no',
+    'approve cancel',
+    'approve or cancel',
+    'yes, wait',
+    'yes wait',
+    'okay stop',
+    'sure, cancel',
+    'go ahead, wait',
+    'confirm no',
+    'yes, not now',
+    'ok, never mind'
+];
+{
+    const p = permissions.requestConfirmation({ title: 'Test', message: 'Confirm?', action: 'contradiction guard' });
+    for (const phrase of CONTRADICTORY_PHRASES) {
+        const ans = permissions.answerVoice(phrase);
+        check(`contradictory "${phrase}" does not approve and stays pending`,
+            ans === null && permissions.hasPending() === true);
+    }
+    permissions.answer(false);
+    await p;
+}
+
+console.log('15) Ambiguous and unrelated transcripts must NOT approve');
+
+const AMBIGUOUS_AND_UNRELATED = [
+    'maybe',
+    'perhaps',
+    'I think so',
+    'probably',
+    'I guess',
+    'hmm',
+    'uh',
+    'whatever',
+    'yes?',
+    'approve?',
+    'should I approve?',
+    'what time is it',
+    'yes I went to the store yesterday',
+    'can you tell me if everything is ok',
+    'make sure my notes are saved',
+    'please do the calculation for 2 plus 2',
+    'go ahead and tell me the weather',
+    'confirm what this action does before anything else',
+    '',
+    '   ',
+    '...'
+];
+{
+    memory.addNote('VoiceSafetyNote', 'important note that must not be deleted by unrelated speech');
+    const pendingExec = skillManager.executeByName('notes', 'delete my note about VoiceSafetyNote');
+    await new Promise(r => setTimeout(r, 10));
+    check('sensitive note deletion is awaiting confirmation', permissions.hasPending() === true);
+
+    for (const transcript of AMBIGUOUS_AND_UNRELATED) {
+        const ans = permissions.answerVoice(transcript);
+        check(`ambiguous/unrelated "${transcript}" → null and stays pending`,
+            ans === null && permissions.hasPending() === true);
+    }
+    check('note still exists while confirmation remains pending', noteGone('VoiceSafetyNote') === false);
+
+    // Explicitly cancel to finish the pending execution
+    const cancelAns = permissions.answerVoice('cancel');
+    const execResult = await pendingExec;
+    check('explicit cancel resolves the pending execution as denied',
+        cancelAns === false && execResult.success === false && execResult.permission.decision === 'denied');
+    check('note still intact after cancellation', noteGone('VoiceSafetyNote') === false);
+}
+
+console.log('16) Late speech cannot approve an already-cancelled or different action');
+
+{
+    // 16a — Late speech after an action is already cancelled
+    memory.addNote('LateSpeechNoteA', 'keep safe A');
+    const execA = skillManager.executeByName('notes', 'delete my note about LateSpeechNoteA');
+    await new Promise(r => setTimeout(r, 10));
+    const metaA = permissions.getPendingMeta();
+    check('prompt A opened', permissions.hasPending() === true && metaA !== null);
+
+    // User cancels action A
+    permissions.answerVoice('cancel');
+    const resA = await execA;
+    check('action A was denied', resA.success === false && resA.permission.decision === 'denied');
+
+    // Late "approve" transcript arrives after cancellation
+    const lateAfterCancel = permissions.answerVoice('approve');
+    const lateWithIdAfterCancel = permissions.answerVoice('yes', metaA.id);
+    check('late speech after cancellation returns null',
+        lateAfterCancel === null && lateWithIdAfterCancel === null && permissions.hasPending() === false);
+    check('Note A still intact after late approval attempt', noteGone('LateSpeechNoteA') === false);
+
+    // Retrying action A must still require confirmation (late speech did not populate approval memo)
+    let reprompted = false;
+    const retryA = skillManager.executeByName('notes', 'delete my note about LateSpeechNoteA');
+    await new Promise(r => setTimeout(r, 10));
+    reprompted = permissions.hasPending();
+    permissions.answer(false);
+    await retryA;
+    check('cancelled action was not memoized as approved after late speech', reprompted === true);
+
+    // 16b — Late speech for prompt 1 cannot approve superseding prompt 2
+    const pFirst = permissions.requestConfirmation({ title: 'First', message: 'First action', action: 'delete note 1' });
+    const firstMeta = permissions.getPendingMeta();
+    const pSecond = permissions.requestConfirmation({ title: 'Second', message: 'Second action', action: 'delete note 2' });
+    const secondMeta = permissions.getPendingMeta();
+
+    check('first prompt resolved to false when superseded', (await pFirst) === false);
+    check('second prompt is now pending with a distinct id',
+        permissions.hasPending() === true && secondMeta.id !== firstMeta.id);
+
+    // Late speech tied to firstMeta (by id, meta object, or action) must NOT approve pSecond
+    const lateById = permissions.answerVoice('approve', firstMeta.id);
+    const lateByMeta = permissions.answerVoice('yes', firstMeta);
+    const lateByAction = permissions.answerVoice('confirm', firstMeta.action);
+    check('late speech bound to first prompt rejected while second prompt is pending',
+        lateById === null && lateByMeta === null && lateByAction === null);
+    check('second prompt remains pending after late speech from first prompt',
+        permissions.hasPending() === true && permissions.getPendingMeta().id === secondMeta.id);
+
+    // Second prompt can still be answered with its own matching id
+    const validSecondCancel = permissions.answerVoice('cancel', secondMeta.id);
+    check('second prompt resolves normally with its own id',
+        validSecondCancel === false && (await pSecond) === false && permissions.hasPending() === false);
+}
 
 console.log(`\nResult: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
