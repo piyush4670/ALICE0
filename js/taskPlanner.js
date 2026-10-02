@@ -219,16 +219,34 @@ class TaskPlanner {
         const steps = [];
         for (const part of parts) {
             // Part 10.2: separate candidate discovery from claim permission.
-            // If candidate discovery finds no meaningful evidence at all
-            // (none / below floor), drop the clause so phantom steps are
-            // not created.
+            // Candidate discovery returns plain-data descriptors only (never
+            // executable skill objects). If discovery finds no meaningful
+            // evidence at all (none / below floor), drop the clause so
+            // phantom steps are not created.
             const candidateInfo = skillManager.findBestCandidate(part);
             if (!candidateInfo || candidateInfo.decision === 'none') continue;
 
             // Claim policy decides execution authorization:
-            // Only strong, unambiguous pattern matches may claim.
-            const claim = skillManager.matchSkill(part);
-            const isClaimed = Boolean(claim && claim.claimed && claim.skill);
+            // Verify discovery evidence and resolve against currently
+            // registered, enabled skills inside SkillManager.
+            const authorizedByPolicy = skillManager.canClaimCandidate(candidateInfo);
+            const claim = authorizedByPolicy ? skillManager.matchSkill(part) : null;
+            const isClaimed = Boolean(
+                authorizedByPolicy &&
+                claim &&
+                claim.claimed === true &&
+                claim.routed === true &&
+                claim.decision === 'strong' &&
+                claim.skill &&
+                typeof claim.skill.name === 'string' &&
+                skillManager.hasSkill(claim.skill.name) &&
+                skillManager.isEnabled(claim.skill.name)
+            );
+            const candidateName = typeof candidateInfo.candidateName === 'string'
+                ? candidateInfo.candidateName
+                : (candidateInfo.candidate && typeof candidateInfo.candidate.name === 'string'
+                    ? candidateInfo.candidate.name
+                    : null);
             const risk = this._has(part, 'delete') ? 'sensitive' : 'safe';
 
             steps.push({
@@ -238,7 +256,7 @@ class TaskPlanner {
                 // claim policy can be bound for automatic execution. Weak or
                 // ambiguous candidates leave `skill: null`.
                 skill: isClaimed ? claim.skill.name : null,
-                candidate: candidateInfo.candidate ? candidateInfo.candidate.name : null,
+                candidate: candidateName,
                 claimed: isClaimed,
                 decision: candidateInfo.decision,
                 confidence: candidateInfo.confidence,

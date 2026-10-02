@@ -1,6 +1,6 @@
 // Focused Part 10.2 test suite: Candidate Discovery vs Claim Permission
-// Validates architectural separation between candidate discovery and
-// deterministic execution authorization in SkillManager and TaskPlanner.
+// Validates architectural separation and authorization hardening between
+// non-executable candidate discovery and deterministic claim authorization.
 
 // --- Browser globals (minimal mocks, matching existing test suites) ----------
 globalThis.localStorage = {
@@ -52,63 +52,88 @@ function check(name, cond) {
     else { fail++; console.log('  FAIL', name); }
 }
 
+/** Recursively verify that a value contains no functions or RegExp objects. */
+function isPlainDataOnly(value) {
+    if (value === null || value === undefined) return true;
+    if (typeof value === 'function' || value instanceof RegExp) return false;
+    if (typeof value !== 'object') return true;
+    if (Array.isArray(value)) return value.every(isPlainDataOnly);
+    return Object.values(value).every(isPlainDataOnly);
+}
+
 // ============================================================================
-console.log('A) Strong candidate — discovery vs claim authorization');
+console.log('A) Strong candidate — non-executable discovery vs claim authorization');
 {
     const candCalc = skillManager.findBestCandidate('2 + 2');
-    check('candidate is discovered for "2 + 2"',
+    check('candidate descriptor is discovered for "2 + 2"',
         candCalc.candidate && candCalc.candidate.name === 'calculator' &&
         candCalc.candidateName === 'calculator');
+    check('candidate discovery returns plain data only (no executable skill object)',
+        typeof candCalc.candidate.execute === 'undefined' &&
+        !('execute' in candCalc.candidate) &&
+        !('patterns' in candCalc.candidate) &&
+        candCalc.candidate !== skillManager.getSkill('calculator') &&
+        isPlainDataOnly(candCalc));
     check('discovery specifies pattern evidence and specificity',
         candCalc.matchType === 'pattern' && candCalc.matchedBy === 'pattern' &&
-        candCalc.specificity >= 1 && candCalc.score === 1.0);
+        candCalc.specificity >= 1 && candCalc.score === 1.0 &&
+        candCalc.candidate.tier === 'pattern' && candCalc.candidate.span === '2 + 2');
     check('discovery confidence is strong',
         candCalc.confidence === 'strong' && candCalc.decision === 'strong');
     check('candidate discovery does NOT authorize claim (claimed/routed are false, skill is null)',
         candCalc.claimed === false && candCalc.routed === false && candCalc.skill === null);
-    check('canClaimCandidate authorizes strong unambiguous candidate',
-        skillManager.canClaimCandidate(candCalc) === true);
+    check('canClaimCandidate authorizes authentic strong unambiguous candidate',
+        skillManager.canClaimCandidate(candCalc) === true &&
+        skillManager._canClaim(candCalc) === true);
 
     const claimCalc = skillManager.matchSkill('2 + 2');
-    check('matchSkill claims strong candidate and binds skill',
+    check('matchSkill claims strong candidate and resolves internal executable skill',
         claimCalc.claimed === true && claimCalc.routed === true &&
-        claimCalc.skill && claimCalc.skill.name === 'calculator' &&
+        claimCalc.skill === skillManager.getSkill('calculator') &&
+        typeof claimCalc.skill.execute === 'function' &&
         claimCalc.decision === 'strong');
-    check('matchSkill includes candidate-discovery metadata on strong match',
+    check('matchSkill candidate metadata remains plain data (no execute function on candidate)',
         claimCalc.candidate && claimCalc.candidate.name === 'calculator' &&
+        typeof claimCalc.candidate.execute === 'undefined' &&
+        claimCalc.candidate !== claimCalc.skill &&
         claimCalc.candidateName === 'calculator' &&
         claimCalc.confidence === 'strong' && claimCalc.matchType === 'pattern');
 
     const candBrowser = skillManager.findBestCandidate('open the website example.com');
-    check('browser candidate is discovered without claiming',
+    check('browser candidate is discovered as plain data without claiming',
         candBrowser.candidate && candBrowser.candidate.name === 'browser' &&
+        typeof candBrowser.candidate.execute === 'undefined' &&
         candBrowser.confidence === 'strong' && candBrowser.claimed === false && candBrowser.skill === null);
     const claimBrowser = skillManager.matchSkill('open the website example.com');
     check('browser claim succeeds via matchSkill',
         claimBrowser.claimed === true && claimBrowser.skill && claimBrowser.skill.name === 'browser');
 
     const candTime = skillManager.findBestCandidate('what time is it');
-    check('datetime candidate is discovered without claiming',
+    check('datetime candidate is discovered as plain data without claiming',
         candTime.candidate && candTime.candidate.name === 'datetime' &&
+        typeof candTime.candidate.execute === 'undefined' &&
         candTime.confidence === 'strong' && candTime.claimed === false && candTime.skill === null);
     const claimTime = skillManager.matchSkill('what time is it');
     check('datetime claim succeeds via matchSkill',
         claimTime.claimed === true && claimTime.skill && claimTime.skill.name === 'datetime');
 
     const internalCand = skillManager._findBestCandidate('2 + 2');
-    check('_findBestCandidate agrees with public findBestCandidate',
+    check('_findBestCandidate agrees with public findBestCandidate and is plain data',
         internalCand.candidateName === candCalc.candidateName &&
         internalCand.confidence === candCalc.confidence &&
-        internalCand.claimed === false && internalCand.skill === null);
+        internalCand.claimed === false && internalCand.skill === null &&
+        isPlainDataOnly(internalCand));
 }
 
 // ============================================================================
 console.log('\nB) Weak candidate — discovery vs claim decline');
 {
     const candWeak = skillManager.findBestCandidate('add two numbers');
-    check('candidate is discovered for weak input ("add two numbers")',
+    check('candidate is discovered for weak input ("add two numbers") as plain data',
         candWeak.candidate && candWeak.candidate.name === 'calculator' &&
-        candWeak.candidateName === 'calculator');
+        candWeak.candidateName === 'calculator' &&
+        typeof candWeak.candidate.execute === 'undefined' &&
+        isPlainDataOnly(candWeak));
     check('weak evidence is identified as keyword tier',
         candWeak.matchType === 'keyword' && candWeak.score >= 0.3 && candWeak.specificity === 0);
     check('confidence is classified as weak',
@@ -116,16 +141,19 @@ console.log('\nB) Weak candidate — discovery vs claim decline');
     check('discovery does not grant claim for weak candidate',
         candWeak.claimed === false && candWeak.routed === false && candWeak.skill === null);
     check('canClaimCandidate declines weak candidate',
-        skillManager.canClaimCandidate(candWeak) === false);
+        skillManager.canClaimCandidate(candWeak) === false &&
+        skillManager._canClaim(candWeak) === false);
 
     const claimWeak = skillManager.matchSkill('add two numbers');
     check('matchSkill declines claim for weak candidate (skill is null, claimed is false)',
         claimWeak.claimed === false && claimWeak.routed === false &&
         claimWeak.skill === null && claimWeak.decision === 'weak');
-    check('matchSkill still exposes discovered weak candidate in metadata',
+    check('matchSkill exposes discovered weak candidate as plain data only',
         claimWeak.candidate && claimWeak.candidate.name === 'calculator' &&
+        typeof claimWeak.candidate.execute === 'undefined' &&
         claimWeak.candidateName === 'calculator' &&
-        claimWeak.confidence === 'weak' && claimWeak.matchType === 'keyword');
+        claimWeak.confidence === 'weak' && claimWeak.matchType === 'keyword' &&
+        isPlainDataOnly(claimWeak));
 
     const historyBefore = skillManager.getHistory().length;
     const processResult = await skillManager.process('add two numbers');
@@ -136,16 +164,18 @@ console.log('\nB) Weak candidate — discovery vs claim decline');
 
     const candWeather = skillManager.findBestCandidate('the weather seems nice today');
     const claimWeather = skillManager.matchSkill('the weather seems nice today');
-    check('weak datetime candidate is discovered but not claimed',
+    check('weak datetime candidate is discovered as plain data but not claimed',
         candWeather.candidate && candWeather.candidate.name === 'datetime' &&
+        typeof candWeather.candidate.execute === 'undefined' &&
         candWeather.confidence === 'weak' &&
         claimWeather.skill === null && claimWeather.claimed === false &&
         claimWeather.candidateName === 'datetime');
 
     const candDev = skillManager.findBestCandidate('write a javascript function');
     const claimDev = skillManager.matchSkill('write a javascript function');
-    check('weak dev candidate is discovered but not claimed',
+    check('weak dev candidate is discovered as plain data but not claimed',
         candDev.candidate && candDev.candidate.name === 'dev' &&
+        typeof candDev.candidate.execute === 'undefined' &&
         candDev.confidence === 'weak' &&
         claimDev.skill === null && claimDev.claimed === false &&
         claimDev.candidateName === 'dev');
@@ -155,8 +185,8 @@ console.log('\nB) Weak candidate — discovery vs claim decline');
 console.log('\nC) Ambiguous candidates — discoverable, declined, registration-order independent');
 {
     const amb = skillManager.findBestCandidate('find the latest error in the code');
-    check('candidates are discoverable for ambiguous match',
-        amb.candidates && amb.candidates.length === 2);
+    check('candidates are discoverable for ambiguous match and contain only plain data',
+        amb.candidates && amb.candidates.length === 2 && isPlainDataOnly(amb));
     check('contenders explicitly list both competing skills in deterministic order',
         JSON.stringify(amb.contenders) === JSON.stringify(['dev', 'websearch']));
     check('confidence is classified as ambiguous',
@@ -164,7 +194,8 @@ console.log('\nC) Ambiguous candidates — discoverable, declined, registration-
     check('candidate discovery does not pick an arbitrary winner (candidate is null)',
         amb.candidate === null && amb.candidateName === null);
     check('canClaimCandidate declines ambiguous candidate info',
-        skillManager.canClaimCandidate(amb) === false);
+        skillManager.canClaimCandidate(amb) === false &&
+        skillManager._canClaim(amb) === false);
 
     const claimAmb = skillManager.matchSkill('find the latest error in the code');
     check('claim is declined for ambiguous match',
@@ -201,12 +232,7 @@ console.log('\nC) Ambiguous candidates — discoverable, declined, registration-
     const compareDiscovery = orderCorpus.every(text => {
         const a = skillManager.findBestCandidate(text);
         const b = reordered.findBestCandidate(text);
-        return a.candidateName === b.candidateName &&
-            a.confidence === b.confidence &&
-            a.score === b.score &&
-            a.specificity === b.specificity &&
-            JSON.stringify(a.contenders) === JSON.stringify(b.contenders) &&
-            JSON.stringify(a.candidates) === JSON.stringify(b.candidates);
+        return JSON.stringify(a) === JSON.stringify(b);
     });
     check('candidate discovery is registration-order independent across all tiers',
         compareDiscovery === true);
@@ -236,7 +262,146 @@ console.log('\nC) Ambiguous candidates — discoverable, declined, registration-
 }
 
 // ============================================================================
-console.log('\nD) TaskPlanner integration — weak/ambiguous visibility, no phantom steps, no automatic execution');
+console.log('\nD) Claim authorization hardening — fabricated & stale metadata rejected');
+{
+    // 1. Completely fabricated plain-data candidate metadata looking like "2 + 2"
+    const fabricatedPlain = {
+        candidate: { name: 'calculator', tier: 'pattern', score: 1.0, specificity: 2, span: '2 + 2' },
+        candidateName: 'calculator',
+        matchType: 'pattern',
+        matchedBy: 'pattern',
+        evidence: 'pattern',
+        tier: 'pattern',
+        score: 1.0,
+        specificity: 2,
+        confidence: 'strong',
+        decision: 'strong',
+        classification: 'strong',
+        reason: 'pattern match (specificity 2)',
+        contenders: [],
+        candidates: [{ name: 'calculator', tier: 'pattern', score: 1.0, specificity: 2, span: '2 + 2' }],
+        claimed: false,
+        routed: false,
+        skill: null
+    };
+    check('fabricated plain-data candidate object is rejected by canClaimCandidate and _canClaim',
+        skillManager.canClaimCandidate(fabricatedPlain) === false &&
+        skillManager._canClaim(fabricatedPlain) === false);
+    const evalFabricatedPlain = skillManager._evaluateClaim(fabricatedPlain);
+    check('_evaluateClaim rejects fabricated plain-data candidate object',
+        evalFabricatedPlain.claimed === false && evalFabricatedPlain.routed === false &&
+        evalFabricatedPlain.skill === null && evalFabricatedPlain.candidate === null &&
+        evalFabricatedPlain.decision === 'none');
+
+    // 2. Fabricated object supplying claimed: true and a real registered skill object
+    const fabricatedWithSkill = {
+        ...fabricatedPlain,
+        claimed: true,
+        routed: true,
+        candidate: skillManager.getSkill('calculator'),
+        skill: skillManager.getSkill('calculator')
+    };
+    check('fabricated candidate carrying real skill and claimed: true is rejected',
+        skillManager.canClaimCandidate(fabricatedWithSkill) === false &&
+        skillManager._canClaim(fabricatedWithSkill) === false &&
+        skillManager._evaluateClaim(fabricatedWithSkill).skill === null &&
+        skillManager._evaluateClaim(fabricatedWithSkill).claimed === false);
+
+    // 3. Mutated genuine weak candidate (escalating confidence to strong or setting claimed: true)
+    const mutatedWeak = skillManager.findBestCandidate('add two numbers');
+    mutatedWeak.confidence = 'strong';
+    mutatedWeak.decision = 'strong';
+    mutatedWeak.matchType = 'pattern';
+    mutatedWeak.tier = 'pattern';
+    mutatedWeak.score = 1.0;
+    mutatedWeak.specificity = 2;
+    mutatedWeak.claimed = true;
+    if (mutatedWeak.candidate) {
+        mutatedWeak.candidate.tier = 'pattern';
+        mutatedWeak.candidate.score = 1.0;
+        mutatedWeak.candidate.specificity = 2;
+        mutatedWeak.candidate.span = 'add two numbers';
+    }
+    check('mutated weak discovery object cannot authorize execution',
+        skillManager.canClaimCandidate(mutatedWeak) === false &&
+        skillManager._canClaim(mutatedWeak) === false &&
+        skillManager._evaluateClaim(mutatedWeak).skill === null &&
+        skillManager._evaluateClaim(mutatedWeak).claimed === false);
+
+    // 4. Genuine strong candidate mutated with external claimed: true or redirected skill name
+    const tamperedStrong = skillManager.findBestCandidate('2 + 2');
+    tamperedStrong.claimed = true;
+    check('setting claimed: true on a discovery object invalidates it for claim verification',
+        skillManager.canClaimCandidate(tamperedStrong) === false &&
+        skillManager._evaluateClaim(tamperedStrong).skill === null);
+
+    const redirectedStrong = skillManager.findBestCandidate('2 + 2');
+    redirectedStrong.candidateName = 'notes';
+    redirectedStrong.candidate.name = 'notes';
+    check('redirecting candidate name on a discovery object is rejected',
+        skillManager.canClaimCandidate(redirectedStrong) === false &&
+        skillManager._evaluateClaim(redirectedStrong).skill === null);
+
+    // 5. Stale candidate metadata after skill is disabled
+    const staleIot = skillManager.findBestCandidate('turn on the light');
+    check('iot candidate is initially claimable while enabled',
+        skillManager.canClaimCandidate(staleIot) === true);
+    skillManager.setEnabled('iot', false);
+    check('stale candidate metadata cannot be claimed after skill is disabled',
+        skillManager.canClaimCandidate(staleIot) === false &&
+        skillManager._canClaim(staleIot) === false);
+    const evalStaleDisabled = skillManager._evaluateClaim(staleIot);
+    check('_evaluateClaim on stale disabled candidate returns skill: null and claimed: false',
+        evalStaleDisabled.skill === null && evalStaleDisabled.claimed === false &&
+        evalStaleDisabled.routed === false && evalStaleDisabled.candidate === null &&
+        evalStaleDisabled.decision === 'none');
+    skillManager.setEnabled('iot', true);
+    check('re-enabling skill restores claimability',
+        skillManager.canClaimCandidate(staleIot) === true);
+
+    // 6. Stale candidate metadata after skill is unregistered
+    skillManager.register({
+        name: 'ephemeral-skill',
+        description: 'Temporary skill for stale unregister test',
+        patterns: [/^run ephemeral tool now$/i],
+        execute: () => ({ success: true, result: 'ephemeral' })
+    });
+    const staleUnreg = skillManager.findBestCandidate('run ephemeral tool now');
+    check('ephemeral skill is initially claimable while registered',
+        skillManager.canClaimCandidate(staleUnreg) === true);
+    skillManager.unregister('ephemeral-skill');
+    check('stale candidate metadata cannot be claimed after skill is unregistered',
+        skillManager.canClaimCandidate(staleUnreg) === false &&
+        skillManager._canClaim(staleUnreg) === false);
+    const evalStaleUnreg = skillManager._evaluateClaim(staleUnreg);
+    check('_evaluateClaim on stale unregistered candidate returns skill: null and claimed: false',
+        evalStaleUnreg.skill === null && evalStaleUnreg.claimed === false &&
+        evalStaleUnreg.routed === false && evalStaleUnreg.candidate === null);
+
+    // 7. Stale candidate metadata after a competing pattern makes the request ambiguous
+    const staleBeforeTwin = skillManager.findBestCandidate('delete my note');
+    check('delete my note is initially claimable before twin registration',
+        skillManager.canClaimCandidate(staleBeforeTwin) === true);
+    skillManager.register({
+        name: 'route-twin-stale',
+        description: 'Competing twin registered after discovery',
+        patterns: [/delete\s+(?:my\s+)?note/i],
+        execute: () => ({ success: true, result: 'twin' })
+    });
+    check('stale candidate cannot be claimed once competing pattern makes it ambiguous',
+        skillManager.canClaimCandidate(staleBeforeTwin) === false &&
+        skillManager._canClaim(staleBeforeTwin) === false);
+    const evalStaleAmb = skillManager._evaluateClaim(staleBeforeTwin);
+    check('_evaluateClaim on newly ambiguous stale candidate declines claim and reports contenders',
+        evalStaleAmb.skill === null && evalStaleAmb.claimed === false &&
+        evalStaleAmb.decision === 'ambiguous' &&
+        evalStaleAmb.contenders.includes('notes') &&
+        evalStaleAmb.contenders.includes('route-twin-stale'));
+    skillManager.unregister('route-twin-stale');
+}
+
+// ============================================================================
+console.log('\nE) TaskPlanner integration — weak/ambiguous visibility, no phantom steps, no automatic execution');
 {
     // 1. Weak candidate step is NOT dropped from the multi-step plan
     const planWithWeak = taskPlanner.analyze('calculate 2 + 2 and then add two numbers');
@@ -290,10 +455,24 @@ console.log('\nD) TaskPlanner integration — weak/ambiguous visibility, no phan
     check('agent executed zero skills when plan contained an ambiguous step',
         skillManager.getHistory().length === historyBeforeAmb);
 
+    // External caller setting claimed: true on an unclaimed step (skill: null) cannot bypass Agent or PlanValidator
+    const forgedPlanSteps = planWithWeak.plan.map(s => ({ ...s, claimed: true }));
+    const historyBeforeForged = skillManager.getHistory().length;
+    const execForgedResult = await agent.executePlan({
+        isMultiStep: true,
+        goal: planWithWeak.goal,
+        plan: forgedPlanSteps
+    }, () => {});
+    check('external claimed: true with skill: null is rejected by Agent without executing any skill',
+        execForgedResult === null &&
+        state.getTask().status === 'idle' &&
+        skillManager.getHistory().length === historyBeforeForged);
+
     const valWeak = planValidator.validate({ goal: planWithWeak.goal, steps: planWithWeak.plan });
     const valAmb = planValidator.validate({ goal: planWithAmb.goal, steps: planWithAmb.plan });
-    check('PlanValidator rejects plans with unclaimed weak or ambiguous steps',
-        valWeak.valid === false && valAmb.valid === false);
+    const valForged = planValidator.validate({ goal: planWithWeak.goal, steps: forgedPlanSteps });
+    check('PlanValidator rejects plans with unclaimed steps even if claimed: true is injected',
+        valWeak.valid === false && valAmb.valid === false && valForged.valid === false);
 
     // 5. Unmatched noise clauses continue to be dropped (no phantom steps)
     const planNoise = taskPlanner.analyze('frobnicate the quux and then what time is it');
@@ -331,7 +510,7 @@ console.log('\nD) TaskPlanner integration — weak/ambiguous visibility, no phan
 }
 
 // ============================================================================
-console.log('\nE) Existing strong routing regression tests');
+console.log('\nF) Existing strong routing regression tests');
 {
     check('calculate 25 * 4 claims calculator',
         skillManager.matchSkill('calculate 25 * 4').skill?.name === 'calculator');
@@ -352,7 +531,7 @@ console.log('\nE) Existing strong routing regression tests');
 }
 
 // ============================================================================
-console.log('\nF) Disabled skill behavior');
+console.log('\nG) Disabled skill behavior');
 {
     check('iot is candidate by default',
         skillManager.findBestCandidate('turn on the light').confidence === 'strong');
@@ -381,7 +560,7 @@ console.log('\nF) Disabled skill behavior');
 }
 
 // ============================================================================
-console.log('\nG) Backward compatibility of matchSkill() & Part 10.3 memory-deletion safeguards');
+console.log('\nH) Backward compatibility of matchSkill() & Part 10.3 memory-deletion safeguards');
 {
     const match = skillManager.matchSkill('2 + 2');
     check('skill property is present and valid skill object',

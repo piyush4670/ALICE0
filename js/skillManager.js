@@ -88,6 +88,7 @@ class SkillManager {
         this._lastSkill = null;
         this._executionHistory = [];
         this._enabled = new Map(); // name -> boolean
+        this._discoveredCandidates = new WeakMap(); // candidateInfo -> immutable discovery record
         
         this._registerSkills();
     }
@@ -261,9 +262,9 @@ class SkillManager {
 
     /**
      * Public: candidate discovery (Part 10.2).
-     * Evaluates enabled skills and describes candidate matches and evidence,
-     * but does NOT authorize execution or claim ownership (`claimed: false`,
-     * `routed: false`, `skill: null`).
+     * Evaluates enabled skills and returns a plain-data candidate descriptor
+     * (never an executable skill object). Does NOT authorize execution or
+     * claim ownership (`claimed: false`, `routed: false`, `skill: null`).
      */
     findBestCandidate(text) {
         return this._findBestCandidate(text);
@@ -271,8 +272,8 @@ class SkillManager {
 
     /**
      * Public: evaluate whether a discovered candidate satisfies the
-     * deterministic claim policy (Part 10.2). Only strong, unambiguous
-     * pattern matches may be claimed for automatic execution.
+     * deterministic claim policy (Part 10.2). Verifies discovery provenance,
+     * pattern evidence, and current registered/enabled skill state.
      */
     canClaimCandidate(candidateInfo) {
         return this._canClaim(candidateInfo);
@@ -285,7 +286,7 @@ class SkillManager {
      * request. Weak or ambiguous candidates are declined.
      *
      * The historical fields are preserved:
-     *   skill — the claimed skill, or null when the router declines
+     *   skill — the claimed skill object, or null when the router declines
      *   score — the strongest evidence score seen (1.0 for a pattern match)
      *
      * The decision and candidate-discovery metadata are additive:
@@ -293,9 +294,9 @@ class SkillManager {
      *   confidence    — 'strong' | 'weak' | 'ambiguous' | 'none'
      *   routed        — true only for 'strong'
      *   claimed       — true only for 'strong' (Part 10.2 explicit claim flag)
-     *   candidate     — discovered single candidate skill ('strong' or 'weak'),
-     *                   or null when 'ambiguous' / 'none'
-     *   candidateSkill — alias for `candidate`
+     *   candidate     — plain-data descriptor { name, tier, score, specificity,
+     *                   span } for 'strong' or 'weak', or null when
+     *                   'ambiguous' / 'none' (never an executable skill object)
      *   candidateName — discovered candidate's skill name, or null
      *   reason        — human-readable explanation of the decision
      *   matchedBy     — 'pattern' | 'keyword' | null
@@ -413,12 +414,35 @@ class SkillManager {
 
     /**
      * Internal/publicly testable abstraction for candidate discovery (Part 10.2).
-     * Discovers enabled skills with pattern or keyword evidence and classifies
-     * confidence without implying claim authorization.
+     * Discovers enabled skills with pattern or keyword evidence and returns
+     * a plain-data candidate descriptor (no executable skill references)
+     * without implying claim authorization.
      */
     _findBestCandidate(text) {
-        const t = typeof text === 'string' ? text.toLowerCase().trim() : '';
+        const normalizedText = typeof text === 'string' ? text.toLowerCase().trim() : '';
+        const descriptor = this._computeCandidateDiscovery(normalizedText);
 
+        this._discoveredCandidates.set(descriptor, Object.freeze({
+            text: normalizedText,
+            candidateName: descriptor.candidateName,
+            confidence: descriptor.confidence,
+            decision: descriptor.decision,
+            matchType: descriptor.matchType,
+            tier: descriptor.tier,
+            score: descriptor.score,
+            specificity: descriptor.specificity,
+            span: descriptor.candidate ? descriptor.candidate.span : null,
+            contendersCount: descriptor.contenders.length
+        }));
+
+        return descriptor;
+    }
+
+    /**
+     * Pure computation of plain-data candidate discovery for normalized text.
+     * Never exposes live skill instances or executable functions.
+     */
+    _computeCandidateDiscovery(t) {
         const candidates = [];
         for (const skill of this.getEnabledSkills()) {
             const candidate = this._routingCandidate(t, skill);
@@ -432,19 +456,19 @@ class SkillManager {
             (b.score - a.score) ||
             (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
-        const serializeCandidates = (list) => list.map(c => ({
+        const toPlainCandidate = (c) => ({
             name: c.name,
             tier: c.tier,
             score: c.score,
             specificity: c.specificity,
             span: c.span
-        }));
+        });
+        const serializeCandidates = (list) => list.map(toPlainCandidate);
 
         const top = candidates[0];
         if (!top) {
             return {
                 candidate: null,
-                candidateSkill: null,
                 candidateName: null,
                 matchType: null,
                 matchedBy: null,
@@ -470,15 +494,14 @@ class SkillManager {
             const isAmbiguous = leaders.length > 1;
             const contenders = isAmbiguous ? leaders.map(c => c.name) : [];
             const confidence = isAmbiguous ? 'ambiguous' : 'strong';
-            const discoveredSkill = isAmbiguous ? null : top.skill;
+            const discoveredCandidate = isAmbiguous ? null : toPlainCandidate(top);
             const reason = isAmbiguous
                 ? `equally specific pattern matches: ${contenders.join(', ')}`
                 : `pattern match (specificity ${top.specificity})`;
 
             return {
-                candidate: discoveredSkill,
-                candidateSkill: discoveredSkill,
-                candidateName: discoveredSkill ? discoveredSkill.name : null,
+                candidate: discoveredCandidate,
+                candidateName: discoveredCandidate ? discoveredCandidate.name : null,
                 matchType: 'pattern',
                 matchedBy: 'pattern',
                 evidence: 'pattern',
@@ -501,7 +524,6 @@ class SkillManager {
         if (top.score < ROUTING_KEYWORD_FLOOR) {
             return {
                 candidate: null,
-                candidateSkill: null,
                 candidateName: null,
                 matchType: 'keyword',
                 matchedBy: 'keyword',
@@ -526,15 +548,14 @@ class SkillManager {
         const isAmbiguous = leaders.length > 1;
         const contenders = isAmbiguous ? leaders.map(c => c.name) : [];
         const confidence = isAmbiguous ? 'ambiguous' : 'weak';
-        const discoveredSkill = isAmbiguous ? null : top.skill;
+        const discoveredCandidate = isAmbiguous ? null : toPlainCandidate(top);
         const reason = isAmbiguous
             ? `ambiguous weak matches: ${contenders.join(', ')}`
             : `keyword-only evidence (score ${top.score}) is not decisive`;
 
         return {
-            candidate: discoveredSkill,
-            candidateSkill: discoveredSkill,
-            candidateName: discoveredSkill ? discoveredSkill.name : null,
+            candidate: discoveredCandidate,
+            candidateName: discoveredCandidate ? discoveredCandidate.name : null,
             matchType: 'keyword',
             matchedBy: 'keyword',
             evidence: 'keyword',
@@ -554,15 +575,134 @@ class SkillManager {
     }
 
     /**
+     * Verify that `candidateInfo` is an authentic, unmutated discovery
+     * descriptor produced by this SkillManager instance and contains no
+     * executable skill references or caller-injected claim flags.
+     */
+    _verifyDiscoveryIntegrity(candidateInfo) {
+        if (!candidateInfo || typeof candidateInfo !== 'object' || Array.isArray(candidateInfo)) {
+            return null;
+        }
+        const record = this._discoveredCandidates.get(candidateInfo);
+        if (!record) return null;
+
+        // Candidate discovery descriptors are never claimed, never routed,
+        // and never carry a skill reference or execute function.
+        if (
+            candidateInfo.claimed !== false ||
+            candidateInfo.routed !== false ||
+            candidateInfo.skill !== null ||
+            typeof candidateInfo.execute === 'function'
+        ) {
+            return null;
+        }
+
+        if (
+            candidateInfo.confidence !== record.confidence ||
+            candidateInfo.decision !== record.decision ||
+            candidateInfo.matchType !== record.matchType ||
+            candidateInfo.tier !== record.tier ||
+            candidateInfo.score !== record.score ||
+            candidateInfo.specificity !== record.specificity ||
+            candidateInfo.candidateName !== record.candidateName
+        ) {
+            return null;
+        }
+
+        if (!Array.isArray(candidateInfo.contenders) || candidateInfo.contenders.length !== record.contendersCount) {
+            return null;
+        }
+        if (!Array.isArray(candidateInfo.candidates)) {
+            return null;
+        }
+        for (const c of candidateInfo.candidates) {
+            if (!c || typeof c !== 'object' || typeof c.execute === 'function' || 'skill' in c || 'patterns' in c) {
+                return null;
+            }
+        }
+
+        if (record.candidateName === null) {
+            if (candidateInfo.candidate !== null) return null;
+        } else {
+            const cand = candidateInfo.candidate;
+            if (!cand || typeof cand !== 'object' || Array.isArray(cand)) return null;
+            if (typeof cand.execute === 'function' || 'skill' in cand || 'patterns' in cand) return null;
+            if (
+                cand.name !== record.candidateName ||
+                cand.tier !== record.tier ||
+                cand.score !== record.score ||
+                cand.specificity !== record.specificity ||
+                cand.span !== record.span
+            ) {
+                return null;
+            }
+        }
+
+        return record;
+    }
+
+    /**
+     * Internal claim authorization resolver (Part 10.2):
+     * Verifies candidate discovery provenance and evidence, resolves the
+     * candidate against currently registered and enabled skills, and
+     * re-verifies that the skill still has an unambiguous pattern match.
+     * Returns the registered skill object only when authorization succeeds.
+     */
+    _resolveAuthorizedSkill(candidateInfo) {
+        const record = this._verifyDiscoveryIntegrity(candidateInfo);
+        if (!record) return null;
+
+        if (
+            record.confidence !== 'strong' ||
+            record.decision !== 'strong' ||
+            record.matchType !== 'pattern' ||
+            record.tier !== 'pattern' ||
+            record.score !== 1.0 ||
+            typeof record.specificity !== 'number' ||
+            !Number.isFinite(record.specificity) ||
+            record.specificity < 0 ||
+            record.contendersCount !== 0 ||
+            typeof record.candidateName !== 'string' ||
+            !record.candidateName ||
+            typeof record.span !== 'string' ||
+            !record.span
+        ) {
+            return null;
+        }
+
+        // Resolve against current registered, enabled skills
+        const liveSkill = this._skills.get(record.candidateName);
+        if (!liveSkill || !this.isEnabled(record.candidateName)) {
+            return null;
+        }
+
+        // Re-verify live pattern evidence across current enabled skills so
+        // stale candidate metadata cannot authorize a skill after registry
+        // or enablement changes.
+        const liveDiscovery = this._computeCandidateDiscovery(record.text);
+        if (
+            liveDiscovery.confidence !== 'strong' ||
+            liveDiscovery.decision !== 'strong' ||
+            liveDiscovery.matchType !== 'pattern' ||
+            liveDiscovery.candidateName !== record.candidateName ||
+            liveDiscovery.specificity !== record.specificity ||
+            liveDiscovery.contenders.length !== 0 ||
+            !liveDiscovery.candidate ||
+            liveDiscovery.candidate.span !== record.span
+        ) {
+            return null;
+        }
+
+        return liveSkill;
+    }
+
+    /**
      * Deterministic claim policy predicate (Part 10.2):
-     * Only strong, unambiguous pattern matches may claim execution ownership.
+     * Only strong, unambiguous pattern matches verified against current
+     * registered, enabled skills may claim execution ownership.
      */
     _canClaim(candidateInfo) {
-        return Boolean(
-            candidateInfo &&
-            candidateInfo.confidence === 'strong' &&
-            candidateInfo.candidate
-        );
+        return Boolean(this._resolveAuthorizedSkill(candidateInfo));
     }
 
     /**
@@ -571,34 +711,51 @@ class SkillManager {
      * metadata and the public `matchSkill()` contract (Part 10.2).
      */
     _evaluateClaim(candidateInfo) {
-        const canClaim = this._canClaim(candidateInfo);
-        const claimedSkill = canClaim ? candidateInfo.candidate : null;
-        const discoveredCandidate = candidateInfo ? candidateInfo.candidate : null;
-        const confidence = candidateInfo ? candidateInfo.confidence : 'none';
-        const matchType = candidateInfo ? candidateInfo.matchType : null;
+        const record = this._verifyDiscoveryIntegrity(candidateInfo);
+        if (!record) {
+            return {
+                skill: null,
+                score: 0,
+                decision: 'none',
+                confidence: 'none',
+                routed: false,
+                claimed: false,
+                candidate: null,
+                candidateName: null,
+                reason: 'unverified or invalid candidate metadata',
+                matchedBy: null,
+                matchType: null,
+                specificity: null,
+                candidates: [],
+                contenders: []
+            };
+        }
+
+        const live = this._computeCandidateDiscovery(record.text);
+        const claimedSkill = this._resolveAuthorizedSkill(candidateInfo);
+        const canClaim = Boolean(claimedSkill);
 
         return {
-            skill: claimedSkill,
-            score: candidateInfo ? candidateInfo.score : 0,
-            decision: confidence,
-            confidence,
+            skill: canClaim ? claimedSkill : null,
+            score: live.score,
+            decision: live.confidence,
+            confidence: live.confidence,
             routed: canClaim,
             claimed: canClaim,
-            candidate: discoveredCandidate,
-            candidateSkill: discoveredCandidate,
-            candidateName: discoveredCandidate ? discoveredCandidate.name : null,
-            reason: candidateInfo ? candidateInfo.reason : 'no skill evidence for this request',
-            matchedBy: matchType,
-            matchType,
-            specificity: (candidateInfo && matchType === 'pattern') ? candidateInfo.specificity : null,
-            candidates: candidateInfo ? candidateInfo.candidates.map(c => ({
+            candidate: live.candidate ? { ...live.candidate } : null,
+            candidateName: live.candidateName,
+            reason: live.reason,
+            matchedBy: live.matchType,
+            matchType: live.matchType,
+            specificity: live.matchType === 'pattern' ? live.specificity : null,
+            candidates: live.candidates.map(c => ({
                 name: c.name,
                 tier: c.tier,
                 score: c.score,
                 specificity: c.specificity,
                 span: c.span
-            })) : [],
-            contenders: candidateInfo ? [...candidateInfo.contenders] : []
+            })),
+            contenders: [...live.contenders]
         };
     }
 

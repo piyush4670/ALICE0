@@ -244,6 +244,16 @@ check('weak clause remains visible in multi-step plan without binding an executa
 check('unclaimed multi-step plan is never automatically executed by the agent (Part 10.2)',
     (await agent.process('calculate 2 + 2 and then add two numbers', { speak: () => {} })) === null &&
     state.getTask().status === 'idle');
+const regDisc = skillManager.findBestCandidate('2 + 2');
+check('candidate discovery returns non-executable plain-data descriptor (Part 10.2 hardening)',
+    regDisc.candidate && regDisc.candidate.name === 'calculator' &&
+    typeof regDisc.candidate.execute === 'undefined' &&
+    regDisc.claimed === false && regDisc.skill === null);
+check('fabricated candidate metadata cannot authorize claim (Part 10.2 hardening)',
+    skillManager.canClaimCandidate({
+        confidence: 'strong', decision: 'strong', claimed: true,
+        candidate: { name: 'calculator', tier: 'pattern', score: 1, specificity: 2, span: '2 + 2' }
+    }) === false);
 injectPlan([step({ skill: 'no-such-skill' })]);
 const rUnknownStep = await agent.process('unknown skill goal', { speak: () => {} });
 check('unknown skill in a plan fails safely (never executed)',
