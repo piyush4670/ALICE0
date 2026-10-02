@@ -235,6 +235,15 @@ const pMixed = taskPlanner.analyze('search the web for cats and then what time i
 check('connector split maps clauses to known skills',
     pMixed.isMultiStep === true && pMixed.plan.length === 2 &&
     pMixed.plan.every(s => s.skill === 'core' || skillManager.hasSkill(s.skill)));
+const pWeakMulti = taskPlanner.analyze('calculate 2 + 2 and then add two numbers');
+check('weak clause remains visible in multi-step plan without binding an executable skill (Part 10.2)',
+    pWeakMulti.isMultiStep === true && pWeakMulti.plan.length === 2 &&
+    pWeakMulti.plan[0].skill === 'calculator' && pWeakMulti.plan[0].claimed === true &&
+    pWeakMulti.plan[1].skill === null && pWeakMulti.plan[1].candidate === 'calculator' &&
+    pWeakMulti.plan[1].claimed === false && pWeakMulti.plan[1].decision === 'weak');
+check('unclaimed multi-step plan is never automatically executed by the agent (Part 10.2)',
+    (await agent.process('calculate 2 + 2 and then add two numbers', { speak: () => {} })) === null &&
+    state.getTask().status === 'idle');
 injectPlan([step({ skill: 'no-such-skill' })]);
 const rUnknownStep = await agent.process('unknown skill goal', { speak: () => {} });
 check('unknown skill in a plan fails safely (never executed)',

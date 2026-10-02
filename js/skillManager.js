@@ -6,8 +6,10 @@
  * Skills can be individually enabled/disabled by the user.
  * Part 10.1: routing is confidence-gated — only a declared pattern match can
  * claim a request; weak keyword-only evidence and equally-ranked (ambiguous)
- * matches are reported and declined instead of guessed (see the routing
- * confidence section below).
+ * matches are reported and declined instead of guessed.
+ * Part 10.2: candidate discovery is separated from claim permission —
+ * finding candidates with evidence is decoupled from authorizing deterministic
+ * execution ownership (see findBestCandidate and matchSkill).
  */
 import { state } from './state.js';
 import { permissions } from './permissions.js';
@@ -258,28 +260,54 @@ class SkillManager {
     }
 
     /**
-     * Public: find the best matching skill for a piece of text without
-     * executing anything, or decide that deterministic routing must not
-     * claim the request (Part 10.1). Used by the task planner to map
-     * sub-tasks to tools and by the conversation loop for the single-skill
-     * path.
+     * Public: candidate discovery (Part 10.2).
+     * Evaluates enabled skills and describes candidate matches and evidence,
+     * but does NOT authorize execution or claim ownership (`claimed: false`,
+     * `routed: false`, `skill: null`).
+     */
+    findBestCandidate(text) {
+        return this._findBestCandidate(text);
+    }
+
+    /**
+     * Public: evaluate whether a discovered candidate satisfies the
+     * deterministic claim policy (Part 10.2). Only strong, unambiguous
+     * pattern matches may be claimed for automatic execution.
+     */
+    canClaimCandidate(candidateInfo) {
+        return this._canClaim(candidateInfo);
+    }
+
+    /**
+     * Public: find candidate skills and apply claim policy (Part 10.2).
+     * Redefined clearly as a CLAIM decision over candidate discovery.
+     * Evaluates whether deterministic routing may claim ownership of the
+     * request. Weak or ambiguous candidates are declined.
      *
      * The historical fields are preserved:
-     *   skill — the routed skill, or null when the router declines
+     *   skill — the claimed skill, or null when the router declines
      *   score — the strongest evidence score seen (1.0 for a pattern match)
      *
-     * The decision metadata is additive:
-     *   decision   — 'strong' | 'weak' | 'ambiguous' | 'none'
-     *   routed     — true only for 'strong'
-     *   reason     — human-readable explanation of the decision
-     *   matchedBy  — 'pattern' | 'keyword' | null
-     *   specificity — number of content tokens the winning pattern consumed
-     *   candidates — every skill with evidence: { name, tier, score,
-     *                specificity, span }, deterministically ordered
-     *   contenders — names of the equally-ranked skills when 'ambiguous'
+     * The decision and candidate-discovery metadata are additive:
+     *   decision      — 'strong' | 'weak' | 'ambiguous' | 'none'
+     *   confidence    — 'strong' | 'weak' | 'ambiguous' | 'none'
+     *   routed        — true only for 'strong'
+     *   claimed       — true only for 'strong' (Part 10.2 explicit claim flag)
+     *   candidate     — discovered single candidate skill ('strong' or 'weak'),
+     *                   or null when 'ambiguous' / 'none'
+     *   candidateSkill — alias for `candidate`
+     *   candidateName — discovered candidate's skill name, or null
+     *   reason        — human-readable explanation of the decision
+     *   matchedBy     — 'pattern' | 'keyword' | null
+     *   matchType     — alias for `matchedBy`
+     *   specificity   — number of content tokens the winning pattern consumed
+     *   candidates    — every skill with evidence: { name, tier, score,
+     *                   specificity, span }, deterministically ordered
+     *   contenders    — names of the equally-ranked skills when 'ambiguous'
      */
     matchSkill(text) {
-        return this._route(text);
+        const candidateInfo = this._findBestCandidate(text);
+        return this._evaluateClaim(candidateInfo);
     }
 
     /**
@@ -356,34 +384,39 @@ class SkillManager {
     }
 
     /**
-     * Find the best matching skill for input (internal). Returns the routed
-     * skill or null — the confidence gate decides whether routing may claim
-     * the request (Part 10.1).
+     * Find the best matching skill for input (internal). Returns the claimed
+     * skill or null — the claim policy decides whether routing may claim
+     * ownership of the request (Part 10.1 / Part 10.2).
      */
     _findSkill(text) {
-        return this._route(text).skill;
+        return this.matchSkill(text).skill;
     }
 
     // =======================================================================
-    // Part 10.1 — deterministic routing confidence gate
+    // Part 10.1 & Part 10.2 — candidate discovery & claim policy separation
     //
-    // Decides WHETHER deterministic routing may claim a request. It never
-    // executes a skill, never logs, never touches skill or app state, and
-    // performs no I/O — evaluation is pure, synchronous and repeatable.
+    // Stage 1: Candidate discovery (`_findBestCandidate` / `findBestCandidate`)
+    //   Describes what enabled skills have pattern or keyword evidence for a
+    //   request and classifies confidence ('strong', 'weak', 'ambiguous',
+    //   'none'). It never grants execution authorization (`claimed: false`,
+    //   `routed: false`, `skill: null`).
     //
-    // Decisions:
-    //   strong    — exactly one skill has the most specific pattern match
-    //               (registration order is never used as a tie-break)
-    //   weak      — only keyword evidence exists; the router declines
-    //   ambiguous — two or more skills are equally well supported; the
-    //               router declines instead of guessing
-    //   none      — no meaningful evidence for any enabled skill
+    // Stage 2: Claim policy (`_canClaim` / `_evaluateClaim` / `matchSkill`)
+    //   Decides whether deterministic routing may claim execution ownership
+    //   of the discovered candidate. Only strong, unambiguous pattern matches
+    //   may claim (`claimed: true`, `routed: true`, `skill: candidate`).
+    //   Weak keyword evidence and ambiguous contenders are declined.
+    //
+    // Both stages are pure, synchronous, side-effect free, and independent
+    // of registration order.
     // =======================================================================
 
     /**
-     * Evaluate routing evidence and return the routing decision.
+     * Internal/publicly testable abstraction for candidate discovery (Part 10.2).
+     * Discovers enabled skills with pattern or keyword evidence and classifies
+     * confidence without implying claim authorization.
      */
-    _route(text) {
+    _findBestCandidate(text) {
         const t = typeof text === 'string' ? text.toLowerCase().trim() : '';
 
         const candidates = [];
@@ -399,40 +432,181 @@ class SkillManager {
             (b.score - a.score) ||
             (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
+        const serializeCandidates = (list) => list.map(c => ({
+            name: c.name,
+            tier: c.tier,
+            score: c.score,
+            specificity: c.specificity,
+            span: c.span
+        }));
+
         const top = candidates[0];
         if (!top) {
-            return this._routingDecision(null, 0, 'none',
-                'no skill evidence for this request', null, null, candidates, []);
+            return {
+                candidate: null,
+                candidateSkill: null,
+                candidateName: null,
+                matchType: null,
+                matchedBy: null,
+                evidence: null,
+                tier: null,
+                score: 0,
+                specificity: 0,
+                confidence: 'none',
+                decision: 'none',
+                classification: 'none',
+                reason: 'no skill evidence for this request',
+                contenders: [],
+                candidates: [],
+                claimed: false,
+                routed: false,
+                skill: null
+            };
         }
 
         if (top.tier === 'pattern') {
             const leaders = candidates.filter(c =>
                 c.tier === 'pattern' && c.specificity === top.specificity);
-            if (leaders.length === 1) {
-                return this._routingDecision(top.skill, top.score, 'strong',
-                    `pattern match (specificity ${top.specificity})`,
-                    'pattern', top.specificity, candidates, []);
-            }
-            return this._routingDecision(null, top.score, 'ambiguous',
-                `equally specific pattern matches: ${leaders.map(c => c.name).join(', ')}`,
-                'pattern', top.specificity, candidates, leaders.map(c => c.name));
+            const isAmbiguous = leaders.length > 1;
+            const contenders = isAmbiguous ? leaders.map(c => c.name) : [];
+            const confidence = isAmbiguous ? 'ambiguous' : 'strong';
+            const discoveredSkill = isAmbiguous ? null : top.skill;
+            const reason = isAmbiguous
+                ? `equally specific pattern matches: ${contenders.join(', ')}`
+                : `pattern match (specificity ${top.specificity})`;
+
+            return {
+                candidate: discoveredSkill,
+                candidateSkill: discoveredSkill,
+                candidateName: discoveredSkill ? discoveredSkill.name : null,
+                matchType: 'pattern',
+                matchedBy: 'pattern',
+                evidence: 'pattern',
+                tier: 'pattern',
+                score: top.score,
+                specificity: top.specificity,
+                confidence,
+                decision: confidence,
+                classification: confidence,
+                reason,
+                contenders,
+                candidates: serializeCandidates(candidates),
+                claimed: false,
+                routed: false,
+                skill: null
+            };
         }
 
         // Keyword-only evidence is weak: it is never enough to claim a request.
         if (top.score < ROUTING_KEYWORD_FLOOR) {
-            return this._routingDecision(null, top.score, 'none',
-                'keyword evidence below the routing floor', 'keyword', null, candidates, []);
+            return {
+                candidate: null,
+                candidateSkill: null,
+                candidateName: null,
+                matchType: 'keyword',
+                matchedBy: 'keyword',
+                evidence: 'keyword',
+                tier: 'keyword',
+                score: top.score,
+                specificity: 0,
+                confidence: 'none',
+                decision: 'none',
+                classification: 'none',
+                reason: 'keyword evidence below the routing floor',
+                contenders: [],
+                candidates: serializeCandidates(candidates),
+                claimed: false,
+                routed: false,
+                skill: null
+            };
         }
+
         const leaders = candidates.filter(c =>
             c.tier === 'keyword' && Math.abs(c.score - top.score) <= ROUTING_EPSILON);
-        if (leaders.length === 1) {
-            return this._routingDecision(null, top.score, 'weak',
-                `keyword-only evidence (score ${top.score}) is not decisive`,
-                'keyword', null, candidates, []);
-        }
-        return this._routingDecision(null, top.score, 'ambiguous',
-            `ambiguous weak matches: ${leaders.map(c => c.name).join(', ')}`,
-            'keyword', null, candidates, leaders.map(c => c.name));
+        const isAmbiguous = leaders.length > 1;
+        const contenders = isAmbiguous ? leaders.map(c => c.name) : [];
+        const confidence = isAmbiguous ? 'ambiguous' : 'weak';
+        const discoveredSkill = isAmbiguous ? null : top.skill;
+        const reason = isAmbiguous
+            ? `ambiguous weak matches: ${contenders.join(', ')}`
+            : `keyword-only evidence (score ${top.score}) is not decisive`;
+
+        return {
+            candidate: discoveredSkill,
+            candidateSkill: discoveredSkill,
+            candidateName: discoveredSkill ? discoveredSkill.name : null,
+            matchType: 'keyword',
+            matchedBy: 'keyword',
+            evidence: 'keyword',
+            tier: 'keyword',
+            score: top.score,
+            specificity: 0,
+            confidence,
+            decision: confidence,
+            classification: confidence,
+            reason,
+            contenders,
+            candidates: serializeCandidates(candidates),
+            claimed: false,
+            routed: false,
+            skill: null
+        };
+    }
+
+    /**
+     * Deterministic claim policy predicate (Part 10.2):
+     * Only strong, unambiguous pattern matches may claim execution ownership.
+     */
+    _canClaim(candidateInfo) {
+        return Boolean(
+            candidateInfo &&
+            candidateInfo.confidence === 'strong' &&
+            candidateInfo.candidate
+        );
+    }
+
+    /**
+     * Claim policy evaluation: decides whether deterministic routing may
+     * claim ownership of the request while preserving candidate-discovery
+     * metadata and the public `matchSkill()` contract (Part 10.2).
+     */
+    _evaluateClaim(candidateInfo) {
+        const canClaim = this._canClaim(candidateInfo);
+        const claimedSkill = canClaim ? candidateInfo.candidate : null;
+        const discoveredCandidate = candidateInfo ? candidateInfo.candidate : null;
+        const confidence = candidateInfo ? candidateInfo.confidence : 'none';
+        const matchType = candidateInfo ? candidateInfo.matchType : null;
+
+        return {
+            skill: claimedSkill,
+            score: candidateInfo ? candidateInfo.score : 0,
+            decision: confidence,
+            confidence,
+            routed: canClaim,
+            claimed: canClaim,
+            candidate: discoveredCandidate,
+            candidateSkill: discoveredCandidate,
+            candidateName: discoveredCandidate ? discoveredCandidate.name : null,
+            reason: candidateInfo ? candidateInfo.reason : 'no skill evidence for this request',
+            matchedBy: matchType,
+            matchType,
+            specificity: (candidateInfo && matchType === 'pattern') ? candidateInfo.specificity : null,
+            candidates: candidateInfo ? candidateInfo.candidates.map(c => ({
+                name: c.name,
+                tier: c.tier,
+                score: c.score,
+                specificity: c.specificity,
+                span: c.span
+            })) : [],
+            contenders: candidateInfo ? [...candidateInfo.contenders] : []
+        };
+    }
+
+    /**
+     * Compatibility alias for matchSkill.
+     */
+    _route(text) {
+        return this.matchSkill(text);
     }
 
     /**
