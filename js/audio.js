@@ -230,24 +230,59 @@ class AudioManager {
     }
 
     /**
-     * Get current audio level (0-1) as normalized time-domain RMS amplitude.
+     * Get current audio level (0-1) — LEGACY frequency-domain average.
      *
-     * Stage 1.1 fix: the previous implementation averaged the
-     * frequency-domain bins from getByteFrequencyData() — a smoothed
-     * dB-mapped spectrum metric, not a waveform amplitude. The level is now
-     * the RMS of the raw time-domain waveform:
-     *   sample = (byte - 128) / 128   -> normalized waveform in [-1, 1]
-     *   level  = sqrt(mean(sample^2)) -> normalized RMS in [0, 1]
-     * 0 means digital silence (every sample on the unsigned midpoint 128),
-     * 1 means a full-scale waveform. Returns 0 when capture or analyser
-     * data is unavailable, and any non-finite result is coerced to 0.
+     * This is the exact metric the wake detector (wakeword.js) has always
+     * consumed, preserved unchanged so Phase 1.1 does not silently alter the
+     * wake path's input. It averages the getByteFrequencyData() bins divided
+     * by 255 — a smoothed, dB-mapped spectrum summary, NOT a calibrated
+     * waveform amplitude. It is kept for wake detection and for the existing
+     * HUD waveform; the time-domain amplitude measurement lives in
+     * getRmsAudioLevel().
      *
-     * This is a measurement fix only — it does NOT make the wake path a
-     * real VAD. The energy thresholds in wakeword.js were never calibrated
-     * against this metric; they are deliberately left untouched here and
-     * recalibration is a separate, evidence-backed change.
+     * Returns 0 when capture or the analyser buffer is unavailable.
      */
     getAudioLevel() {
+        if (!this._analyser || !this._audioData) {
+            return 0;
+        }
+
+        this._analyser.getByteFrequencyData(this._audioData);
+        
+        // Calculate average volume
+        let sum = 0;
+        for (let i = 0; i < this._audioData.length; i++) {
+            sum += this._audioData[i];
+        }
+        
+        return sum / (this._audioData.length * 255);
+    }
+
+    /**
+     * Get normalized time-domain RMS amplitude of the microphone waveform.
+     *
+     * Reads getByteTimeDomainData() into its own buffer (separate from the
+     * frequency buffer used by getAudioLevel()/getFrequencyData()):
+     *   sample = (byte - 128) / 128   -> normalized waveform sample
+     *   level  = sqrt(mean(sample^2)) -> normalized RMS
+     *
+     * Range: the unsigned byte encoding is asymmetric around its 128
+     * midpoint, so a sample sits in [-1, +0.9921875] (byte 0 -> -1,
+     * byte 255 -> +127/128). The RMS is therefore finite in [0, 1]: 1 is
+     * attainable only when EVERY sample sits on the negative rail (byte 0),
+     * while the byte-255 positive rail yields 127/128 ≈ 0.99219 — i.e. the
+     * positive rail does NOT reach 1. The [0, 1] clamp is a defensive bound
+     * that never binds for real byte input.
+     * 0 means digital silence (every sample on the midpoint 128).
+     *
+     * Returns 0 when capture, the analyser, or the time-domain buffer is
+     * unavailable, and coerces any non-finite result to 0.
+     *
+     * NOTE: this is a measurement fix, not a VAD. Nothing consumes it for
+     * wake detection yet, and the wake thresholds in wakeword.js were never
+     * calibrated against it — recalibration is a separate, tested change.
+     */
+    getRmsAudioLevel() {
         if (!this._analyser || !this._timeDomainData ||
             typeof this._analyser.getByteTimeDomainData !== 'function') {
             return 0;
@@ -277,7 +312,7 @@ class AudioManager {
     /**
      * Get frequency data for visualization.
      * Uses its own frequency-domain buffer (frequencyBinCount bytes) and
-     * never touches the time-domain buffer backing getAudioLevel().
+     * never touches the time-domain buffer backing getRmsAudioLevel().
      */
     getFrequencyData() {
         if (!this._analyser || !this._audioData) {

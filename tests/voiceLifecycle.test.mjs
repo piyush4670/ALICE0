@@ -20,10 +20,12 @@
 //   P) Permission race — Stop while permission pending; stale grant cannot
 //                        resurrect voice; re-enable works afterwards
 //   Q) Capture concurrency — parallel startCapture() shares ONE stream
-//   R) Audio level     — time-domain RMS measurement (Phase 1.1): no
-//                        analyser → 0, silent waveform → 0, known synthetic
-//                        waveforms → expected RMS, amplitude scaling,
-//                        frequency buffer separation, cleanup on Stop
+//   R) Audio level     — Phase 1.1 measurement separation: legacy
+//                        frequency-domain getAudioLevel() (the exact metric
+//                        the wake detector consumes) vs the new time-domain
+//                        getRmsAudioLevel(); silence → 0 for both, synthetic
+//                        waveform RMS values, amplitude scaling, buffer
+//                        separation, fail-safe cleanup on Stop
 //
 // No production behavior is changed by this file.
 
@@ -101,11 +103,18 @@ const synthMock = {
     onvoiceschanged: null
 };
 
-// Controllable time-domain waveform for AudioManager RMS tests. For each
-// sample index the mock analyser asks this function for one unsigned byte:
-// 128 is the midpoint (= digital silence in the Web Audio byte encoding).
-// Tests swap it per case to simulate silence / known amplitudes.
+// Controllable analyser data for AudioManager tests.
+//   mockWaveform(index)  -> unsigned byte for getByteTimeDomainData();
+//                           128 is the midpoint (= digital silence).
+//   mockFrequencyBins(n) -> byte array for getByteFrequencyData().
+// Defaults reproduce the pre-Phase-1.1 analyser exactly — all-zero frequency
+// bins and a silent waveform — so the existing wake-lifecycle sections keep
+// the same inputs they had before this change.
 let mockWaveform = () => 128;
+let mockFrequencyBins = (n) => new Uint8Array(n);
+// Number of getByteTimeDomainData() invocations — lets tests assert exactly
+// which method reads the time-domain path (legacy getAudioLevel must not).
+let timeDomainReads = 0;
 
 class MockAudioContext {
     static created = 0;
@@ -120,8 +129,11 @@ class MockAudioContext {
             set fftSize(v) { this._fftSize = v; },
             get frequencyBinCount() { return this._fftSize / 2; },
             smoothingTimeConstant: 0,
-            getByteFrequencyData(arr) { for (let i = 0; i < arr.length; i++) arr[i] = 0; },
-            getByteTimeDomainData(arr) { for (let i = 0; i < arr.length; i++) arr[i] = mockWaveform(i); }
+            getByteFrequencyData(arr) { arr.set(mockFrequencyBins(arr.length)); },
+            getByteTimeDomainData(arr) {
+                timeDomainReads++;
+                for (let i = 0; i < arr.length; i++) arr[i] = mockWaveform(i);
+            }
         };
     }
     close() {}
@@ -561,66 +573,139 @@ audioManager.stopCapture();
 check('cleanup: capture stopped after concurrency test', audioManager.isCapturing() === false);
 
 // ============================================================================
-console.log('R) Audio level — time-domain RMS measurement (Phase 1.1)');
-// Capture is inactive here: there is no analyser and no time-domain buffer,
-// so a level read must fail closed.
-check('no active analyser: getAudioLevel() is exactly 0', audioManager.getAudioLevel() === 0);
-check('no active analyser: time-domain buffer is absent', !audioManager._timeDomainData);
+console.log('R) Audio level — legacy wake metric vs new time-domain RMS (Phase 1.1)');
+// Phase 1.1 split the two measurements: getAudioLevel() keeps the legacy
+// frequency-domain average the wake detector has always consumed, and
+// getRmsAudioLevel() exposes the new normalized time-domain RMS.
 
-// Bring capture up directly — voice-on/off routing is already covered by
-// sections A–Q and is not re-exercised here.
-const captureForRms = await audioManager.startCapture();
-check('capture active for RMS measurement', captureForRms !== null && audioManager.isCapturing() === true);
+// --- Fail-closed with no analyser / no capture ------------------------------
+check('no analyser: getAudioLevel() is exactly 0', audioManager.getAudioLevel() === 0);
+check('no analyser: getRmsAudioLevel() is exactly 0', audioManager.getRmsAudioLevel() === 0);
+check('no analyser: time-domain buffer is absent', !audioManager._timeDomainData);
+check('no analyser: frequency buffer is absent', !audioManager._audioData);
+
+// Bring capture up directly — voice-on/off routing is covered by sections A–Q.
+const captureForLevels = await audioManager.startCapture();
+check('capture active for level measurement', captureForLevels !== null && audioManager.isCapturing() === true);
 check('time-domain buffer allocated from analyser.fftSize',
     audioManager._timeDomainData instanceof Uint8Array && audioManager._timeDomainData.length === 256);
+check('frequency buffer allocated from analyser.frequencyBinCount',
+    audioManager._audioData instanceof Uint8Array && audioManager._audioData.length === 128);
 
-// Install a waveform (index -> unsigned byte) and read the level.
-const levelOf = (fn) => { mockWaveform = fn; return audioManager.getAudioLevel(); };
+// --- 1) Silence: both metrics are exactly zero ------------------------------
+mockWaveform = () => 128;            // midpoint = digital silence
+mockFrequencyBins = (n) => new Uint8Array(n); // all-zero bins = legacy silence
+const silentReadsBefore = timeDomainReads;
+check('silent waveform: getRmsAudioLevel() returns exactly 0', audioManager.getRmsAudioLevel() === 0);
+check('silent waveform: RMS path performed exactly one time-domain read',
+    timeDomainReads === silentReadsBefore + 1);
+const readsAfterRms = timeDomainReads;
+check('silent waveform: getAudioLevel() returns exactly 0', audioManager.getAudioLevel() === 0);
 
-// 1) Digital silence: every sample on the unsigned midpoint 128.
-check('silent waveform returns exactly 0', levelOf(() => 128) === 0);
+// --- 2) LEGACY WALK: getAudioLevel() is the same metric the wake detector
+//        consumed before Phase 1.1 -----------------------------------------
+check('legacy getAudioLevel() never reads the time domain',
+    timeDomainReads === readsAfterRms);
+const halfScaleBins = new Uint8Array(128).fill(128); // mean 128/255
+mockFrequencyBins = () => halfScaleBins;
+check('legacy getAudioLevel() = mean(bins)/255 (0.5019607843…)',
+    Math.abs(audioManager.getAudioLevel() - (128 / 255)) < 1e-12);
+const fullScaleBins = new Uint8Array(128).fill(255); // mean 255/255 = 1
+mockFrequencyBins = () => fullScaleBins;
+check('legacy getAudioLevel() = 1 for all-255 bins (unchanged since Stage 1A)',
+    audioManager.getAudioLevel() === 1);
+// The wake detector itself consumes exactly this method — assert the call
+// site is unchanged rather than re-deriving it.
+const wakeSrc = readFileSync(new NodeURL('../js/wakeword.js', import.meta.url), 'utf8');
+check('wake detector still calls audioManager.getAudioLevel()', /const level = audioManager\.getAudioLevel\(\);/.test(wakeSrc));
+check('wake detector does not call getRmsAudioLevel()',
+    !/getRmsAudioLevel/.test(wakeSrc));
+// Drive the real detection loop and confirm the value it records is the
+// legacy frequency-domain metric, not the RMS. rAF is stubbed, so the loop
+// advances only through the frames this test invokes explicitly.
+mockWaveform = () => 192;                       // ±64 square → RMS 0.5
+mockFrequencyBins = () => fullScaleBins;        // legacy metric → 1.0
+const detectorStarted = await wakeWordDetector.start();
+check('wake detector started for the metric probe', detectorStarted === true);
+check('probe: wake detection is running', wakeWordDetector.isRunning() === true);
+wakeWordDetector._audioBuffer = [];
+wakeWordDetector._detectLoop();                 // one real detection frame
+const loopLevel = wakeWordDetector._audioBuffer[wakeWordDetector._audioBuffer.length - 1];
+check('detection loop recorded the legacy metric (1), not the RMS (0.5)', loopLevel === 1);
+check('getRmsAudioLevel() for the same analyser state is 0.5',
+    Math.abs(audioManager.getRmsAudioLevel() - 0.5) < 1e-12);
+wakeWordDetector.stop();                        // leave detection stopped, as it was
+check('wake detector stopped again after the metric probe', wakeWordDetector.isRunning() === false);
+wakeWordDetector._audioBuffer = [];
 
-// 2) Known synthetic square wave, amplitude 64 bytes = 0.5 normalized.
-//    RMS of a ±0.5 square wave is exactly 0.5.
-const squareLevel = levelOf((i) => (i % 2 === 0 ? 64 : 192));
+// --- 3) New time-domain RMS against known synthetic waveforms ---------------
+const rmsOf = (fn) => { mockWaveform = fn; return audioManager.getRmsAudioLevel(); };
+mockFrequencyBins = (n) => new Uint8Array(n);   // back to silent bins
+
+// ±64 bytes → normalized ±0.5; RMS of a square wave is exactly 0.5.
+const squareLevel = rmsOf((i) => (i % 2 === 0 ? 64 : 192));
 check('±64 square wave yields RMS 0.5 (within 0.001)', Math.abs(squareLevel - 0.5) < 0.001);
 
-// 3) Known synthetic sine, byte amplitude 64 -> normalized 0.5.
-//    RMS = 0.5 / sqrt(2) ≈ 0.353553 (quantization keeps this inside 0.01).
-const sineLevel = levelOf((i) => Math.round(128 + 64 * Math.sin((2 * Math.PI * i) / 32)));
+// Sine, byte amplitude 64 → normalized 0.5; RMS = 0.5 / sqrt(2) ≈ 0.353553.
+const sineLevel = rmsOf((i) => Math.round(128 + 64 * Math.sin((2 * Math.PI * i) / 32)));
 check('amplitude-64 sine yields RMS ≈ 0.3536 (within 0.01)', Math.abs(sineLevel - 0.353553) < 0.01);
 
-// 4) Amplitude scaling: a quieter waveform must give a smaller RMS.
-const quieterLevel = levelOf((i) => (i % 2 === 0 ? 96 : 160)); // ±32 -> RMS 0.25
+// Amplitude scaling: a quieter waveform must give a strictly smaller RMS.
+const quieterLevel = rmsOf((i) => (i % 2 === 0 ? 96 : 160)); // ±32 → RMS 0.25
 check('±32 square wave yields RMS 0.25 (within 0.001)', Math.abs(quieterLevel - 0.25) < 0.001);
 check('quieter waveform gives strictly smaller RMS', quieterLevel < squareLevel);
 
-// 5) Full-scale input stays inside the documented [0, 1] range and is finite.
-const fullScaleLevel = levelOf(() => 255); // (255-128)/128 = 0.9921875
-check('full-scale byte input stays finite inside [0, 1]',
-    Number.isFinite(fullScaleLevel) && fullScaleLevel > 0.99 && fullScaleLevel <= 1);
+// Positive rail: (255-128)/128 = 127/128 ≈ 0.9921875 (NOT 1 — the byte
+// encoding is asymmetric around its 128 midpoint).
+const positiveRailLevel = rmsOf(() => 255);
+check('byte-255 positive rail yields RMS ≈ 0.99219, not 1',
+    Number.isFinite(positiveRailLevel) && Math.abs(positiveRailLevel - 127 / 128) < 1e-12);
+check('positive-rail RMS stays inside [0, 1]', positiveRailLevel > 0.99 && positiveRailLevel <= 1);
+// Negative rail: (0-128)/128 = -1 → RMS exactly 1.
+const negativeRailLevel = rmsOf(() => 0);
+check('byte-0 negative rail yields RMS exactly 1', negativeRailLevel === 1);
+check('every sampled RMS stays finite inside [0, 1]',
+    [squareLevel, sineLevel, quieterLevel, positiveRailLevel, negativeRailLevel]
+        .every((v) => Number.isFinite(v) && v >= 0 && v <= 1));
 
-// 6) Frequency rendering keeps its own buffer and cannot corrupt the level.
-mockWaveform = (i) => (i % 2 === 0 ? 64 : 192);
-const levelBeforeFrequencyRead = audioManager.getAudioLevel();
+// --- 4) Buffer separation and frequency visualization intact ----------------
+mockWaveform = (i) => (i % 2 === 0 ? 64 : 192); // square → RMS 0.5
+const rmsBeforeFrequencyRead = audioManager.getRmsAudioLevel();
+const visualizationBins = new Uint8Array(128).fill(64); // mean 64/255
+mockFrequencyBins = () => visualizationBins;
 const frequencyData = audioManager.getFrequencyData();
 check('getFrequencyData still returns Uint8Array frequency bins',
     frequencyData instanceof Uint8Array && frequencyData.length === audioManager._analyser.frequencyBinCount);
+check('getFrequencyData content reflects the frequency source',
+    frequencyData.every((v) => v === 64));
 check('frequency and time-domain buffers are distinct objects',
     frequencyData !== audioManager._timeDomainData);
-check('frequency read leaves the RMS level unchanged',
-    audioManager.getAudioLevel() === levelBeforeFrequencyRead);
-check('getFrequencyData content is unchanged (mock bins stay 0)',
-    frequencyData.every((v) => v === 0));
+check('frequency-domain read does not touch the RMS buffer',
+    audioManager.getRmsAudioLevel() === rmsBeforeFrequencyRead && rmsBeforeFrequencyRead === squareLevel);
+check('legacy getAudioLevel() uses the frequency bins, not the waveform',
+    Math.abs(audioManager.getAudioLevel() - (64 / 255)) < 1e-12);
+// Returning the internal buffer is pre-existing behavior (callers re-read it);
+// the RMS path must remain independent of that aliasing.
+const legacyAlias = audioManager.getFrequencyData();
+legacyAlias[0] = 200;
+check('mutating the returned frequency buffer does not disturb the RMS',
+    audioManager.getRmsAudioLevel() === squareLevel);
 
-// 7) Stop clears the new buffer and fails closed again.
+// --- 5) Stopping capture clears both buffers and both methods fail safely ---
 audioManager.stopCapture();
 check('stopCapture clears the time-domain buffer', audioManager._timeDomainData === null);
 check('stopCapture clears the frequency buffer', audioManager._audioData === null);
-check('after stop: getAudioLevel() is exactly 0', audioManager.getAudioLevel() === 0);
+check('after stop: getRmsAudioLevel() is exactly 0', audioManager.getRmsAudioLevel() === 0);
+check('after stop: getAudioLevel() is exactly 0 (legacy fail-safe)',
+    audioManager.getAudioLevel() === 0);
 check('after stop: getFrequencyData() is empty', audioManager.getFrequencyData().length === 0);
 check('after stop: capture is inactive', audioManager.isCapturing() === false);
-mockWaveform = () => 128; // restore neutral waveform
+check('after stop: no further time-domain reads occur',
+    (() => { const n = timeDomainReads; audioManager.getRmsAudioLevel(); return timeDomainReads === n; })());
+
+// Restore neutral analyser data for anything that might run later.
+mockWaveform = () => 128;
+mockFrequencyBins = (n) => new Uint8Array(n);
 
 // ============================================================================
 console.log(`\n${pass} passed, ${fail} failed`);
