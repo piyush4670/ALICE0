@@ -289,6 +289,7 @@ node tests/agent.test.mjs   # planner, agent loop, failure recovery, permissions
 node tests/calculatorRouting.test.mjs # calculator routing: math reaches the calculator, "what is …" knowledge questions do not (62 checks)
 node tests/part5.test.mjs   # Part 5: plugins, memory, settings, IoT, dev, security (34 checks)
 node tests/routingConfidence.test.mjs # Part 10.1: deterministic routing confidence gate — strong routes, weak/ambiguous/no-route decisions, disabled skills (49 checks)
+node tests/candidateDiscoveryClaim.test.mjs # Part 10.2: candidate discovery vs claim permission separation + TaskPlanner integration (101 checks)
 node tests/memorySafeForget.test.mjs # Part 10.3: safe memory forgetting — exact/single/ambiguous/missing targets, target-bound approvals, change detection, stale-approval invalidation (144 checks)
 node tests/gateway.test.mjs # Phase 6.3.1 secure local AI gateway (44 checks)
 node tests/gatewayCors.test.mjs # Phase 6.3.4 minimal gateway CORS for the local dev frontend

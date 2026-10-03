@@ -218,14 +218,51 @@ class TaskPlanner {
 
         const steps = [];
         for (const part of parts) {
-            const match = skillManager.matchSkill(part);
-            if (!match || !match.skill) continue;
+            // Part 10.2: separate candidate discovery from claim permission.
+            // Candidate discovery returns plain-data descriptors only (never
+            // executable skill objects). If discovery finds no meaningful
+            // evidence at all (none / below floor), drop the clause so
+            // phantom steps are not created.
+            const candidateInfo = skillManager.findBestCandidate(part);
+            if (!candidateInfo || candidateInfo.decision === 'none') continue;
 
+            // Claim policy decides execution authorization:
+            // Verify discovery evidence and resolve against currently
+            // registered, enabled skills inside SkillManager.
+            const authorizedByPolicy = skillManager.canClaimCandidate(candidateInfo);
+            const claim = authorizedByPolicy ? skillManager.matchSkill(part) : null;
+            const isClaimed = Boolean(
+                authorizedByPolicy &&
+                claim &&
+                claim.claimed === true &&
+                claim.routed === true &&
+                claim.decision === 'strong' &&
+                claim.skill &&
+                typeof claim.skill.name === 'string' &&
+                skillManager.hasSkill(claim.skill.name) &&
+                skillManager.isEnabled(claim.skill.name)
+            );
+            const candidateName = typeof candidateInfo.candidateName === 'string'
+                ? candidateInfo.candidateName
+                : (candidateInfo.candidate && typeof candidateInfo.candidate.name === 'string'
+                    ? candidateInfo.candidate.name
+                    : null);
             const risk = this._has(part, 'delete') ? 'sensitive' : 'safe';
+
             steps.push({
                 id: `step_${steps.length + 1}`,
                 label: part,
-                skill: match.skill.name,
+                // Explicit semantic boundary: only a skill authorized by the
+                // claim policy can be bound for automatic execution. Weak or
+                // ambiguous candidates leave `skill: null`.
+                skill: isClaimed ? claim.skill.name : null,
+                candidate: candidateName,
+                claimed: isClaimed,
+                decision: candidateInfo.decision,
+                confidence: candidateInfo.confidence,
+                matchedBy: candidateInfo.matchType,
+                reason: candidateInfo.reason,
+                contenders: Array.isArray(candidateInfo.contenders) ? [...candidateInfo.contenders] : [],
                 operation: null,
                 action: part,
                 input: part,
