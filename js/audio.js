@@ -12,7 +12,11 @@ class AudioManager {
         this._mediaStream = null;
         this._source = null;
         this._isListening = false;
-        this._audioData = null;
+        // Frequency-domain bins (visualization) and time-domain waveform
+        // samples (amplitude measurement) are kept in SEPARATE buffers so
+        // reading one can never corrupt the other.
+        this._audioData = null;      // getByteFrequencyData() target
+        this._timeDomainData = null; // getByteTimeDomainData() target
         this._permissionStatus = 'prompt'; // 'prompt', 'granted', 'denied'
         // Capture race protection (Stage 1A fix): every acquisition runs
         // under a generation token; stopCapture() bumps it so a
@@ -180,6 +184,11 @@ class AudioManager {
 
             this._audioData = new Uint8Array(this._analyser.frequencyBinCount);
 
+            // Time-domain sample buffer for waveform amplitude. Sized from
+            // the analyser's FFT size — getByteTimeDomainData() fills exactly
+            // fftSize samples.
+            this._timeDomainData = new Uint8Array(this._analyser.fftSize);
+
             this._isListening = true;
             state.logActivity('Audio capture started', 'success');
 
@@ -214,32 +223,61 @@ class AudioManager {
         this._source = null;
         this._analyser = null;
         this._audioData = null;
+        this._timeDomainData = null;
         this._isListening = false;
 
         state.logActivity('Audio capture stopped', 'info');
     }
 
     /**
-     * Get current audio level (0-1)
+     * Get current audio level (0-1) as normalized time-domain RMS amplitude.
+     *
+     * Stage 1.1 fix: the previous implementation averaged the
+     * frequency-domain bins from getByteFrequencyData() — a smoothed
+     * dB-mapped spectrum metric, not a waveform amplitude. The level is now
+     * the RMS of the raw time-domain waveform:
+     *   sample = (byte - 128) / 128   -> normalized waveform in [-1, 1]
+     *   level  = sqrt(mean(sample^2)) -> normalized RMS in [0, 1]
+     * 0 means digital silence (every sample on the unsigned midpoint 128),
+     * 1 means a full-scale waveform. Returns 0 when capture or analyser
+     * data is unavailable, and any non-finite result is coerced to 0.
+     *
+     * This is a measurement fix only — it does NOT make the wake path a
+     * real VAD. The energy thresholds in wakeword.js were never calibrated
+     * against this metric; they are deliberately left untouched here and
+     * recalibration is a separate, evidence-backed change.
      */
     getAudioLevel() {
-        if (!this._analyser || !this._audioData) {
+        if (!this._analyser || !this._timeDomainData ||
+            typeof this._analyser.getByteTimeDomainData !== 'function') {
             return 0;
         }
 
-        this._analyser.getByteFrequencyData(this._audioData);
-        
-        // Calculate average volume
-        let sum = 0;
-        for (let i = 0; i < this._audioData.length; i++) {
-            sum += this._audioData[i];
+        this._analyser.getByteTimeDomainData(this._timeDomainData);
+
+        const samples = this._timeDomainData;
+        if (samples.length === 0) {
+            return 0;
         }
-        
-        return sum / (this._audioData.length * 255);
+
+        let sumSquares = 0;
+        for (let i = 0; i < samples.length; i++) {
+            const normalized = (samples[i] - 128) / 128;
+            sumSquares += normalized * normalized;
+        }
+
+        const rms = Math.sqrt(sumSquares / samples.length);
+        if (!Number.isFinite(rms)) {
+            return 0;
+        }
+
+        return Math.min(1, Math.max(0, rms));
     }
 
     /**
-     * Get frequency data for visualization
+     * Get frequency data for visualization.
+     * Uses its own frequency-domain buffer (frequencyBinCount bytes) and
+     * never touches the time-domain buffer backing getAudioLevel().
      */
     getFrequencyData() {
         if (!this._analyser || !this._audioData) {

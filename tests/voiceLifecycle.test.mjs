@@ -20,6 +20,10 @@
 //   P) Permission race — Stop while permission pending; stale grant cannot
 //                        resurrect voice; re-enable works afterwards
 //   Q) Capture concurrency — parallel startCapture() shares ONE stream
+//   R) Audio level     — time-domain RMS measurement (Phase 1.1): no
+//                        analyser → 0, silent waveform → 0, known synthetic
+//                        waveforms → expected RMS, amplitude scaling,
+//                        frequency buffer separation, cleanup on Stop
 //
 // No production behavior is changed by this file.
 
@@ -97,14 +101,27 @@ const synthMock = {
     onvoiceschanged: null
 };
 
+// Controllable time-domain waveform for AudioManager RMS tests. For each
+// sample index the mock analyser asks this function for one unsigned byte:
+// 128 is the midpoint (= digital silence in the Web Audio byte encoding).
+// Tests swap it per case to simulate silence / known amplitudes.
+let mockWaveform = () => 128;
+
 class MockAudioContext {
     static created = 0;
     constructor() { MockAudioContext.created++; }
     createMediaStreamSource() { return { connect() {} }; }
     createAnalyser() {
         return {
-            fftSize: 0, smoothingTimeConstant: 0, frequencyBinCount: 8,
-            getByteFrequencyData(arr) { for (let i = 0; i < arr.length; i++) arr[i] = 0; }
+            // Mirrors a real AnalyserNode: fftSize is a settable power of
+            // two (default 2048) and frequencyBinCount is always fftSize/2.
+            _fftSize: 2048,
+            get fftSize() { return this._fftSize; },
+            set fftSize(v) { this._fftSize = v; },
+            get frequencyBinCount() { return this._fftSize / 2; },
+            smoothingTimeConstant: 0,
+            getByteFrequencyData(arr) { for (let i = 0; i < arr.length; i++) arr[i] = 0; },
+            getByteTimeDomainData(arr) { for (let i = 0; i < arr.length; i++) arr[i] = mockWaveform(i); }
         };
     }
     close() {}
@@ -542,6 +559,68 @@ check('exactly ONE getUserMedia for concurrent capture requests', getUserMediaCa
 check('capture active exactly once', audioManager.isCapturing() === true);
 audioManager.stopCapture();
 check('cleanup: capture stopped after concurrency test', audioManager.isCapturing() === false);
+
+// ============================================================================
+console.log('R) Audio level — time-domain RMS measurement (Phase 1.1)');
+// Capture is inactive here: there is no analyser and no time-domain buffer,
+// so a level read must fail closed.
+check('no active analyser: getAudioLevel() is exactly 0', audioManager.getAudioLevel() === 0);
+check('no active analyser: time-domain buffer is absent', !audioManager._timeDomainData);
+
+// Bring capture up directly — voice-on/off routing is already covered by
+// sections A–Q and is not re-exercised here.
+const captureForRms = await audioManager.startCapture();
+check('capture active for RMS measurement', captureForRms !== null && audioManager.isCapturing() === true);
+check('time-domain buffer allocated from analyser.fftSize',
+    audioManager._timeDomainData instanceof Uint8Array && audioManager._timeDomainData.length === 256);
+
+// Install a waveform (index -> unsigned byte) and read the level.
+const levelOf = (fn) => { mockWaveform = fn; return audioManager.getAudioLevel(); };
+
+// 1) Digital silence: every sample on the unsigned midpoint 128.
+check('silent waveform returns exactly 0', levelOf(() => 128) === 0);
+
+// 2) Known synthetic square wave, amplitude 64 bytes = 0.5 normalized.
+//    RMS of a ±0.5 square wave is exactly 0.5.
+const squareLevel = levelOf((i) => (i % 2 === 0 ? 64 : 192));
+check('±64 square wave yields RMS 0.5 (within 0.001)', Math.abs(squareLevel - 0.5) < 0.001);
+
+// 3) Known synthetic sine, byte amplitude 64 -> normalized 0.5.
+//    RMS = 0.5 / sqrt(2) ≈ 0.353553 (quantization keeps this inside 0.01).
+const sineLevel = levelOf((i) => Math.round(128 + 64 * Math.sin((2 * Math.PI * i) / 32)));
+check('amplitude-64 sine yields RMS ≈ 0.3536 (within 0.01)', Math.abs(sineLevel - 0.353553) < 0.01);
+
+// 4) Amplitude scaling: a quieter waveform must give a smaller RMS.
+const quieterLevel = levelOf((i) => (i % 2 === 0 ? 96 : 160)); // ±32 -> RMS 0.25
+check('±32 square wave yields RMS 0.25 (within 0.001)', Math.abs(quieterLevel - 0.25) < 0.001);
+check('quieter waveform gives strictly smaller RMS', quieterLevel < squareLevel);
+
+// 5) Full-scale input stays inside the documented [0, 1] range and is finite.
+const fullScaleLevel = levelOf(() => 255); // (255-128)/128 = 0.9921875
+check('full-scale byte input stays finite inside [0, 1]',
+    Number.isFinite(fullScaleLevel) && fullScaleLevel > 0.99 && fullScaleLevel <= 1);
+
+// 6) Frequency rendering keeps its own buffer and cannot corrupt the level.
+mockWaveform = (i) => (i % 2 === 0 ? 64 : 192);
+const levelBeforeFrequencyRead = audioManager.getAudioLevel();
+const frequencyData = audioManager.getFrequencyData();
+check('getFrequencyData still returns Uint8Array frequency bins',
+    frequencyData instanceof Uint8Array && frequencyData.length === audioManager._analyser.frequencyBinCount);
+check('frequency and time-domain buffers are distinct objects',
+    frequencyData !== audioManager._timeDomainData);
+check('frequency read leaves the RMS level unchanged',
+    audioManager.getAudioLevel() === levelBeforeFrequencyRead);
+check('getFrequencyData content is unchanged (mock bins stay 0)',
+    frequencyData.every((v) => v === 0));
+
+// 7) Stop clears the new buffer and fails closed again.
+audioManager.stopCapture();
+check('stopCapture clears the time-domain buffer', audioManager._timeDomainData === null);
+check('stopCapture clears the frequency buffer', audioManager._audioData === null);
+check('after stop: getAudioLevel() is exactly 0', audioManager.getAudioLevel() === 0);
+check('after stop: getFrequencyData() is empty', audioManager.getFrequencyData().length === 0);
+check('after stop: capture is inactive', audioManager.isCapturing() === false);
+mockWaveform = () => 128; // restore neutral waveform
 
 // ============================================================================
 console.log(`\n${pass} passed, ${fail} failed`);
