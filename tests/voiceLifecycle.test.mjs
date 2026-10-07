@@ -670,6 +670,20 @@ check('every sampled RMS stays finite inside [0, 1]',
 
 // --- 4) Buffer separation and frequency visualization intact ----------------
 mockWaveform = (i) => (i % 2 === 0 ? 64 : 192); // square → RMS 0.5
+
+// The RMS must read INTO the dedicated _timeDomainData buffer — poison that
+// buffer first and verify it is the one that gets refilled, while _audioData
+// (frequency) is left untouched by the RMS path.
+audioManager._timeDomainData.fill(0);
+audioManager._audioData.fill(0);
+const rmsFromDedicatedBuffer = audioManager.getRmsAudioLevel();
+check('RMS refilled the dedicated _timeDomainData buffer',
+    audioManager._timeDomainData.every((v) => v === 64 || v === 192));
+check('RMS value derives from the refilled time-domain buffer',
+    rmsFromDedicatedBuffer === squareLevel);
+check('RMS did not write into the frequency buffer',
+    audioManager._audioData.every((v) => v === 0));
+
 const rmsBeforeFrequencyRead = audioManager.getRmsAudioLevel();
 const visualizationBins = new Uint8Array(128).fill(64); // mean 64/255
 mockFrequencyBins = () => visualizationBins;
