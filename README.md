@@ -25,8 +25,11 @@ ALICE is a 5-part development project:
 - **Waveform Visualizer**: Real-time audio visualization
 
 ### Part 2 - Voice System
-- **Wake Detection**: audio-activity based wake (placeholder — no phrase
-  verification yet; see `js/wakeword.js`), plus manual Wake button
+- **Wake Detection**: audio-activity based wake on the normalized
+  time-domain RMS amplitude (Phase 1.2B) — still a placeholder, not a VAD
+  and not phrase verification, and its thresholds are not yet calibrated
+  against live microphone hardware (see `js/wakeword.js`), plus manual
+  Wake button
 - **Speech Recognition**: Real-time speech-to-text
 - **Natural TTS**: Human-like text-to-speech
 - **Voice Controls**: Wake, Stop, Mic toggle buttons
@@ -296,7 +299,7 @@ node tests/gatewayCors.test.mjs # Phase 6.3.4 minimal gateway CORS for the local
 node tests/httpModelAdapter.test.mjs # Phase 6.3.2/6.3.4 HTTP model adapter + default wiring (151 checks)
 node tests/realProvider.test.mjs     # Phase 6.3.3 real provider connection (201 checks)
 node tests/voiceLifecycle.test.mjs   # Stage 1A voice lifecycle / Stop / races / capture-race / boot / settings (159 checks)
-node tests/wakeRmsCalibration.test.mjs # Phase 1.2A synthetic legacy-level / RMS / wake-transition calibration (156 checks)
+node tests/wakeRmsCalibration.test.mjs # Phase 1.2B wake detector on time-domain RMS: fixtures, threshold retention, migration guards (660 checks)
 node tests/load.test.mjs    # verifies all 43 modules import without errors
 
 # or run every suite at once
@@ -368,7 +371,10 @@ unrestricted autonomy — nothing sensitive runs without an explicit yes.
 
 ## ⚠️ Known Limitations
 
-- Wake word uses simple energy detection (can improve with ML)
+- Wake word uses simple energy detection over the normalized time-domain RMS
+  amplitude (can improve with ML); it is not a VAD, does not verify any phrase,
+  and its 0.02 / 0.05 thresholds have only been validated on deterministic
+  synthetic fixtures — live microphone calibration is still pending
 - Web search limited to DuckDuckGo Instant Answer API
 - The task planner is deterministic (rule/recipe based) — it recognizes a
   curated set of goal patterns plus connector-split commands, not arbitrary
