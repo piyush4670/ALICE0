@@ -295,7 +295,8 @@ node tests/gateway.test.mjs # Phase 6.3.1 secure local AI gateway (44 checks)
 node tests/gatewayCors.test.mjs # Phase 6.3.4 minimal gateway CORS for the local dev frontend
 node tests/httpModelAdapter.test.mjs # Phase 6.3.2/6.3.4 HTTP model adapter + default wiring (151 checks)
 node tests/realProvider.test.mjs     # Phase 6.3.3 real provider connection (201 checks)
-node tests/voiceLifecycle.test.mjs   # Stage 1A voice lifecycle / Stop / races / capture-race / boot / settings (115 checks)
+node tests/voiceLifecycle.test.mjs   # Stage 1A voice lifecycle / Stop / races / capture-race / boot / settings (159 checks)
+node tests/wakeRmsCalibration.test.mjs # Phase 1.2A synthetic legacy-level / RMS / wake-transition calibration (156 checks)
 node tests/load.test.mjs    # verifies all 43 modules import without errors
 
 # or run every suite at once
