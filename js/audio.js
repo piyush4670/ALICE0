@@ -12,7 +12,11 @@ class AudioManager {
         this._mediaStream = null;
         this._source = null;
         this._isListening = false;
-        this._audioData = null;
+        // Frequency-domain bins (visualization) and time-domain waveform
+        // samples (amplitude measurement) are kept in SEPARATE buffers so
+        // reading one can never corrupt the other.
+        this._audioData = null;      // getByteFrequencyData() target
+        this._timeDomainData = null; // getByteTimeDomainData() target
         this._permissionStatus = 'prompt'; // 'prompt', 'granted', 'denied'
         // Capture race protection (Stage 1A fix): every acquisition runs
         // under a generation token; stopCapture() bumps it so a
@@ -180,6 +184,11 @@ class AudioManager {
 
             this._audioData = new Uint8Array(this._analyser.frequencyBinCount);
 
+            // Time-domain sample buffer for waveform amplitude. Sized from
+            // the analyser's FFT size — getByteTimeDomainData() fills exactly
+            // fftSize samples.
+            this._timeDomainData = new Uint8Array(this._analyser.fftSize);
+
             this._isListening = true;
             state.logActivity('Audio capture started', 'success');
 
@@ -214,13 +223,24 @@ class AudioManager {
         this._source = null;
         this._analyser = null;
         this._audioData = null;
+        this._timeDomainData = null;
         this._isListening = false;
 
         state.logActivity('Audio capture stopped', 'info');
     }
 
     /**
-     * Get current audio level (0-1)
+     * Get current audio level (0-1) — LEGACY frequency-domain average.
+     *
+     * This is the exact metric the wake detector (wakeword.js) has always
+     * consumed, preserved unchanged so Phase 1.1 does not silently alter the
+     * wake path's input. It averages the getByteFrequencyData() bins divided
+     * by 255 — a smoothed, dB-mapped spectrum summary, NOT a calibrated
+     * waveform amplitude. It is kept for wake detection and for the existing
+     * HUD waveform; the time-domain amplitude measurement lives in
+     * getRmsAudioLevel().
+     *
+     * Returns 0 when capture or the analyser buffer is unavailable.
      */
     getAudioLevel() {
         if (!this._analyser || !this._audioData) {
@@ -239,7 +259,60 @@ class AudioManager {
     }
 
     /**
-     * Get frequency data for visualization
+     * Get normalized time-domain RMS amplitude of the microphone waveform.
+     *
+     * Reads getByteTimeDomainData() into its own buffer (separate from the
+     * frequency buffer used by getAudioLevel()/getFrequencyData()):
+     *   sample = (byte - 128) / 128   -> normalized waveform sample
+     *   level  = sqrt(mean(sample^2)) -> normalized RMS
+     *
+     * Range: the unsigned byte encoding is asymmetric around its 128
+     * midpoint, so a sample sits in [-1, +0.9921875] (byte 0 -> -1,
+     * byte 255 -> +127/128). The RMS is therefore finite in [0, 1]: 1 is
+     * attainable only when EVERY sample sits on the negative rail (byte 0),
+     * while the byte-255 positive rail yields 127/128 ≈ 0.99219 — i.e. the
+     * positive rail does NOT reach 1. The [0, 1] clamp is a defensive bound
+     * that never binds for real byte input.
+     * 0 means digital silence (every sample on the midpoint 128).
+     *
+     * Returns 0 when capture, the analyser, or the time-domain buffer is
+     * unavailable, and coerces any non-finite result to 0.
+     *
+     * NOTE: this is a measurement fix, not a VAD. Nothing consumes it for
+     * wake detection yet, and the wake thresholds in wakeword.js were never
+     * calibrated against it — recalibration is a separate, tested change.
+     */
+    getRmsAudioLevel() {
+        if (!this._analyser || !this._timeDomainData ||
+            typeof this._analyser.getByteTimeDomainData !== 'function') {
+            return 0;
+        }
+
+        this._analyser.getByteTimeDomainData(this._timeDomainData);
+
+        const samples = this._timeDomainData;
+        if (samples.length === 0) {
+            return 0;
+        }
+
+        let sumSquares = 0;
+        for (let i = 0; i < samples.length; i++) {
+            const normalized = (samples[i] - 128) / 128;
+            sumSquares += normalized * normalized;
+        }
+
+        const rms = Math.sqrt(sumSquares / samples.length);
+        if (!Number.isFinite(rms)) {
+            return 0;
+        }
+
+        return Math.min(1, Math.max(0, rms));
+    }
+
+    /**
+     * Get frequency data for visualization.
+     * Uses its own frequency-domain buffer (frequencyBinCount bytes) and
+     * never touches the time-domain buffer backing getRmsAudioLevel().
      */
     getFrequencyData() {
         if (!this._analyser || !this._audioData) {
