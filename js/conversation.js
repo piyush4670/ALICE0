@@ -26,6 +26,8 @@ import { detectIntent } from './ai/intentDetector.js';
 import { detectResponseDepth } from './ai/responseDepthDetector.js';
 import { detectPersonalityMode } from './ai/personalityModeDetector.js';
 import { detectEmotionalSignal } from './ai/emotionalSignalDetector.js';
+import { routeRequest, REQUEST_ROUTE } from './ai/requestRouter.js';
+import { AI_OUTCOME, fallbackResponseFor, formatAiDiagnostic, classifyAiError } from './ai/aiOutcome.js';
 import { delay } from './utils.js';
 
 class ConversationManager {
@@ -905,8 +907,19 @@ class ConversationManager {
     /**
      * Process command through skill system.
      * `token` lets in-flight speech be suppressed if the user pressed Stop
-     * while the pipeline was running. THE PIPELINE ITSELF IS UNCHANGED:
+     * while the pipeline was running, and stops any action from starting
+     * after Stop. THE PIPELINE ITSELF IS UNCHANGED FOR ACTIONS:
      * AI Brain → Plan Validator → Agent → Permission Gateway → Skills.
+     *
+     * Routing (js/ai/requestRouter.js) decides what a failed AI attempt may
+     * fall back to:
+     *   - ACTION requests keep the deterministic fallback (agent, then a
+     *     single skill). Skills still pass the Permission Gateway.
+     *   - CONVERSATIONAL requests never run a skill or the agent. If the AI
+     *     cannot answer, the user gets a categorized recovery reply.
+     *
+     * Every failed AI attempt is categorized by aiOutcome.js and logged as a
+     * content-free diagnostic. A failure is never presented as an AI answer.
      *
      * Part 6 supplies Interaction Context metadata on the AI Brain call.
      * Source is explicitly passed by the command-entry path; intent comes
@@ -919,9 +932,12 @@ class ConversationManager {
     async _processWithSkills(text, token = null, source = 'text') {
         state.set('aliceState', CONFIG.states.UNDERSTANDING);
 
+        const route = routeRequest(text);
+
         // 1. AI Brain pipeline (Phase 6.2)
         // Proposes structured plans or responses. Untrusted actions pass through
         // the Plan Validator before reaching the Agent.
+        let outcome = AI_OUTCOME.DISABLED;
         if (CONFIG.ai?.enabled && aiBrain.isEnabled()) {
             try {
                 // Part 7A: deterministic turn lifecycle — first command is 'new',
@@ -954,6 +970,11 @@ class ConversationManager {
                 });
                 if (aiResult && aiResult.success) {
                     if (aiResult.isMultiStep && Array.isArray(aiResult.plan) && aiResult.plan.length > 0) {
+                        // Stop was pressed while the plan was being produced:
+                        // a validated plan must not start executing now.
+                        if (this._isStale(token)) {
+                            return this._fallbackTurn(AI_OUTCOME.CANCELLED);
+                        }
                         // Pass validated plan to existing Agent
                         const agentResult = await agent.executePlan(
                             { isMultiStep: true, goal: aiResult.goal || text, plan: aiResult.plan },
@@ -977,18 +998,43 @@ class ConversationManager {
                             state.set('aliceState', CONFIG.states.COMPLETING);
                             return { response: agentResult.response, skill: 'agent' };
                         }
+                        // The Agent declined the validated plan, so nothing ran.
+                        outcome = AI_OUTCOME.INVALID_OUTPUT;
+                        this._logAiFailure(outcome, 'validate');
                     } else if (aiResult.response) {
                         // Direct AI response: already user-facing, so it is
                         // returned as-is and never re-synthesized.
                         return { response: aiResult.response, skill: 'ai' };
+                    } else {
+                        outcome = AI_OUTCOME.INVALID_OUTPUT;
+                        this._logAiFailure(outcome, 'parse');
                     }
+                } else {
+                    outcome = aiResult?.outcome || AI_OUTCOME.INTERNAL;
+                    this._logAiFailure(outcome, aiResult?.stage, aiResult?.code);
                 }
             } catch (e) {
-                state.logActivity(`AI Brain pipeline error: ${e.message}`, 'warning');
+                // Never log the raw error message: it can quote user text.
+                outcome = AI_OUTCOME.INTERNAL;
+                state.logActivity(
+                    formatAiDiagnostic({ label: 'AI Brain pipeline error', stage: 'pipeline', kind: outcome, code: 'INTERNAL' }),
+                    'warning'
+                );
             }
         }
 
-        // 2. Deterministic Fallback: Try the agent first for multi-step goals (Part 4).
+        // 2. Conversational requests end here. They are never executed as a
+        //    skill or handed to the Agent, even when the AI cannot answer.
+        if (route !== REQUEST_ROUTE.ACTION) {
+            return this._fallbackTurn(outcome);
+        }
+
+        // Stop was pressed during AI processing: start no deterministic action.
+        if (this._isStale(token)) {
+            return this._fallbackTurn(AI_OUTCOME.CANCELLED);
+        }
+
+        // 3. Deterministic Fallback: Try the agent first for multi-step goals (Part 4).
         // The agent returns null when the input is not a multi-step task,
         // in which case we fall back to the single-skill path unchanged.
         const agentResult = await agent.process(text, {
@@ -1029,9 +1075,20 @@ class ConversationManager {
             return { response: skillResult.error || 'Something went wrong.', skill: match.skill.name };
         }
 
-        // Fall back to basic responses
-        const basicResponse = this._generateBasicResponse(text);
-        return { response: basicResponse, skill: 'basic' };
+        // 4. Nothing deterministic could handle the action: say why, using the
+        //    categorized AI outcome rather than a generic reply.
+        return this._fallbackTurn(outcome);
+    }
+
+    /** True when the turn's generation token was invalidated (Stop/disable). */
+    _isStale(token) {
+        return token !== null && token !== this._generation;
+    }
+
+    /** Record a content-free diagnostic for a non-success AI outcome. */
+    _logAiFailure(outcome, stage = null, code = null) {
+        const level = (outcome === AI_OUTCOME.OFFLINE || outcome === AI_OUTCOME.DISABLED) ? 'info' : 'warning';
+        state.logActivity(formatAiDiagnostic({ stage, kind: outcome, code }), level);
     }
 
     /**
@@ -1069,67 +1126,24 @@ class ConversationManager {
             }
             state.logActivity('Final response synthesis produced no text — using the task result', 'warning');
         } catch (e) {
-            state.logActivity(`Final response synthesis failed: ${e.message}`, 'warning');
+            const { kind, code } = classifyAiError(e);
+            state.logActivity(formatAiDiagnostic({ label: 'AI Brain synthesis error', stage: 'synthesize', kind, code }), 'warning');
         }
         return agentResult.response;
     }
 
     /**
-     * Generate basic responses (fallback when no skill matches)
+     * Centralized non-AI reply for a turn that could not be answered. The
+     * text is chosen only by the categorized outcome: it is fixed (never
+     * random), never keyword-driven, and never one of the generic help
+     * replies. Nothing here executes anything.
+     *
+     * @param {string} outcome - An AI_OUTCOME value
+     * @returns {{ response: string, skill: string }}
      */
-    _generateBasicResponse(text) {
-        const lower = text.toLowerCase().trim();
-
-        // Basic pattern matching
-        if (lower.includes('hello') || lower.includes('hi ') || lower.includes('hey')) {
-            return 'Hello! How are you doing today?';
-        }
-
-        if (lower.includes('how are you')) {
-            return "I'm doing great, thank you for asking! Ready to help you with anything you need.";
-        }
-
-        if (lower.includes('what is your name') || lower.includes("what's your name")) {
-            return 'My name is ALICE, which stands for Advanced Learning and Intelligence Companion Engine.';
-        }
-
-        if (lower.includes('time')) {
-            const now = new Date();
-            const hours = now.getHours();
-            const minutes = now.getMinutes();
-            return `The current time is ${hours} ${minutes < 10 ? 'o\'clock' : minutes}.`;
-        }
-
-        if (lower.includes('date') || lower.includes('today')) {
-            const now = new Date();
-            const options = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-            return `Today's date is ${now.toLocaleDateString('en-US', options)}.`;
-        }
-
-        if (lower.includes('thank')) {
-            return "You're welcome! Is there anything else I can help you with?";
-        }
-
-        if (lower.includes('bye') || lower.includes('goodbye') || lower.includes('see you')) {
-            return "Goodbye! It was great talking with you. Feel free to wake me anytime you need help.";
-        }
-
-        if (lower.includes('help')) {
-            return "I can help you with many things! Try saying 'calculate 25 percent of 800', 'remind me to call mom at 6 PM', 'remember that my favorite color is blue', or 'search the web for weather'. What would you like to do?";
-        }
-
-        if (lower.includes('who are you') || lower.includes('what are you')) {
-            return "I'm ALICE, an AI assistant with skills in calculations, reminders, notes, web search, and memory. Just say 'help' to learn about my skills!";
-        }
-
-        // Default response
-        const defaults = [
-            "That's interesting! I'm not sure how to help with that specifically, but try saying 'help' to learn about my skills.",
-            "I understand. I'm here to help you with calculations, reminders, notes, web search, and remembering things. What would you like assistance with?",
-            "I'm here to help! Try asking me to calculate something, set a reminder, save a note, or search the web."
-        ];
-
-        return defaults[Math.floor(Math.random() * defaults.length)];
+    _fallbackTurn(outcome) {
+        const skill = outcome === AI_OUTCOME.CANCELLED ? 'cancelled' : 'fallback';
+        return { response: fallbackResponseFor(outcome), skill };
     }
 
     /**

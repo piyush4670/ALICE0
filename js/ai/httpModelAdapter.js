@@ -642,10 +642,24 @@ export class HttpModelAdapter extends ModelAdapter {
             throw new AIValidationError(`Model output exceeded max size limit of ${maxOutputChars} characters`);
         }
 
+        // Only an explicit `realProvider: false` from the local gateway marks
+        // output as offline (mock provider). Anything else is live output.
+        const offline = payload.realProvider === false;
+
+        let structured;
+        try {
+            structured = this._extractStructured(payload, text, options);
+        } catch (err) {
+            // Offline text is not a model answer, so its shape does not matter.
+            if (!offline) throw err;
+            structured = null;
+        }
+
         return {
             text,
-            structured: this._extractStructured(payload, text, options),
-            usage: normalizeUsage(payload.usage)
+            structured,
+            usage: normalizeUsage(payload.usage),
+            offline
         };
     }
 

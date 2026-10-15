@@ -98,7 +98,13 @@ class ContextBuilder {
         let history = [];
         if (includeHistory) {
             try {
-                const rawHistory = state?.getConversation?.() || [];
+                let rawHistory = state?.getConversation?.() || [];
+                // The current user turn is recorded before the pipeline runs and
+                // is already supplied as "User Request". Do not repeat it here.
+                const last = rawHistory[rawHistory.length - 1];
+                if (last && last.role === 'user' && String(last.text || '').trim() === cleanRequest) {
+                    rawHistory = rawHistory.slice(0, -1);
+                }
                 history = rawHistory.slice(-historyLimit).map(h => ({
                     role: h.role === 'user' ? 'user' : 'assistant',
                     text: String(h.text || '').slice(0, 500)
