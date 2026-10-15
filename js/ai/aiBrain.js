@@ -43,7 +43,8 @@
  */
 import { CONFIG } from '../config.js';
 import { state } from '../state.js';
-import { ModelAdapter, AIValidationError } from './modelAdapter.js';
+import { ModelAdapter, AIError, AIValidationError } from './modelAdapter.js';
+import { AI_OUTCOME, classifyAiError, formatAiDiagnostic, tagAiStage } from './aiOutcome.js';
 import { MockAdapter } from './mockAdapter.js';
 import { HttpModelAdapter } from './httpModelAdapter.js';
 import { planValidator as defaultPlanValidator } from './planValidator.js';
@@ -90,6 +91,11 @@ function pickContextBuilderOptions(options = {}) {
         }
     }
     return picked;
+}
+
+/** True for a string with at least one non-whitespace character. */
+function isNonEmptyString(value) {
+    return typeof value === 'string' && value.trim().length > 0;
 }
 
 /**
@@ -250,8 +256,13 @@ export class AIBrain {
      *     to adapter.generate(); ContextBuilder fields (historyLimit,
      *     memoryLimit, includeTools, includeMemory, includeHistory,
      *     includeTaskState) keep working as before.
-     * @returns {Promise<Object>} Processed result or fallback indicator. A
-     *     validated multi-step result additionally carries `context`: the
+     * @returns {Promise<Object>} Processed result. Every result carries an
+     *     `outcome` (an AI_OUTCOME category) and, on failure, the pipeline
+     *     `stage` where it occurred. Success is `CONVERSATION` (a valid direct
+     *     natural-language answer) or `PLAN` (a validated action plan); every
+     *     other outcome is a failure that the caller must handle explicitly —
+     *     a failure is never presented as an AI answer.
+     *     A validated multi-step result additionally carries `context`: the
      *     already-built ContextBuilder context for this request (returned
      *     as-is, never rebuilt or mutated), so the caller can hand the SAME
      *     context to generateResponse() after the Agent executes the plan.
@@ -264,7 +275,9 @@ export class AIBrain {
                 success: false,
                 isMultiStep: false,
                 response: 'Please provide a request or instruction.',
-                error: 'Empty request'
+                error: 'Empty request',
+                outcome: AI_OUTCOME.INVALID_REQUEST,
+                stage: 'input'
             };
         }
 
@@ -273,10 +286,13 @@ export class AIBrain {
                 success: false,
                 disabled: true,
                 fallback: true,
-                error: 'AI Brain is currently disabled'
+                error: 'AI Brain is currently disabled',
+                outcome: AI_OUTCOME.DISABLED,
+                stage: 'input'
             };
         }
 
+        let stage = 'context';
         try {
             // 1. Build bounded context through an explicit ContextBuilder
             //    input boundary (Part 4). Only the fields ContextBuilder
@@ -294,20 +310,26 @@ export class AIBrain {
             });
 
             // 2. Generate structured plan or response via adapter
+            stage = 'generate';
             const generation = await this.generatePlan(text, context, options);
 
             // 3. Handle generated multi-step plan
             if (generation.isPlan && generation.plan) {
                 // Validate plan strictly with PlanValidator
+                stage = 'validate';
                 const validation = this._validator.validate(generation.plan);
 
                 if (!validation.valid) {
-                    state.logActivity(`AI plan rejected by Plan Validator: ${validation.errors.join('; ')}`, 'warning');
+                    // Count only: the individual messages quote model-supplied values.
+                    const issues = validation.errors.length;
+                    state.logActivity(`AI plan rejected by Plan Validator (${issues} issue${issues === 1 ? '' : 's'})`, 'warning');
                     return {
                         success: false,
                         fallback: true,
                         error: `Invalid AI plan: ${validation.errors.join('; ')}`,
-                        validationErrors: validation.errors
+                        validationErrors: validation.errors,
+                        outcome: AI_OUTCOME.INVALID_OUTPUT,
+                        stage
                     };
                 }
 
@@ -322,17 +344,34 @@ export class AIBrain {
                     // synthesis can reuse it instead of building a second,
                     // independent context.
                     context,
-                    raw: generation.raw
+                    raw: generation.raw,
+                    outcome: AI_OUTCOME.PLAN,
+                    stage
                 };
             }
 
-            // 4. Handle direct natural language response
+            // 4. A mock/offline generation is never a model answer, so it is
+            //    reported as OFFLINE and can never be presented as one.
+            if (generation.offline) {
+                return {
+                    success: false,
+                    fallback: true,
+                    offline: true,
+                    error: 'No live AI model is connected',
+                    outcome: AI_OUTCOME.OFFLINE,
+                    stage
+                };
+            }
+
+            // 5. Handle direct natural language response
             if (generation.isDirectResponse) {
                 return {
                     success: true,
                     isMultiStep: false,
                     response: generation.response,
-                    raw: generation.raw
+                    raw: generation.raw,
+                    outcome: AI_OUTCOME.CONVERSATION,
+                    stage
                 };
             }
 
@@ -340,19 +379,54 @@ export class AIBrain {
             return {
                 success: false,
                 fallback: true,
-                error: 'AI did not produce a recognizable plan or response'
+                error: 'AI did not produce a recognizable plan or response',
+                outcome: AI_OUTCOME.INVALID_OUTPUT,
+                stage
             };
         } catch (err) {
-            const normErr = this._adapter.normalizeError(err);
-            state.logActivity(`AI Brain generation error: ${normErr.message}`, 'warning');
+            // The failing stage is tagged where it happened (generatePlan tags
+            // adapter and parse errors); otherwise it is the stage we reached.
+            // The raw message is never logged here: parser and provider messages
+            // can quote model output or user text. The caller logs the stage,
+            // category and fixed code via formatAiDiagnostic().
+            const failedStage = err?.aiStage || stage;
+            const failure = this._describeFailure(err, failedStage);
 
             return {
                 success: false,
                 fallback: true,
-                error: normErr.message,
-                code: normErr.code
+                error: failure.message,
+                code: failure.code,
+                outcome: failure.kind,
+                stage: failedStage
             };
         }
+    }
+
+    /**
+     * Map a thrown error to a categorized failure. Errors raised by the
+     * adapter are normalized into the AI error hierarchy first; any error
+     * that is not part of that hierarchy and did not come from the adapter is
+     * a local INTERNAL fault, never a provider fault.
+     *
+     * @param {*} err
+     * @param {string} stage
+     * @returns {{ kind: string, code: string, message: string }}
+     */
+    _describeFailure(err, stage) {
+        let aiError = err instanceof AIError ? err : null;
+        if (!aiError && stage === 'generate') {
+            aiError = this._adapter.normalizeError(err);
+        }
+        if (aiError) {
+            const { kind, code } = classifyAiError(aiError);
+            return { kind, code, message: aiError.message };
+        }
+        return {
+            kind: AI_OUTCOME.INTERNAL,
+            code: 'INTERNAL',
+            message: 'AI Brain encountered an unexpected error'
+        };
     }
 
     /**
@@ -387,60 +461,91 @@ export class AIBrain {
         // unchanged, preserving the existing adapter-options contract.
         const { interactionContext: _interactionContext, ...adapterOptions } = options;
 
-        const result = await this._adapter.generate(prompt, {
-            responseFormat: 'plan',
-            timeout: options.timeout || CONFIG.ai?.timeout || 5000,
-            signal: options.signal || null,
-            ...adapterOptions
-        });
-
-        if (!result) {
-            throw new Error('Model adapter returned empty result');
+        let result;
+        try {
+            result = await this._adapter.generate(prompt, {
+                responseFormat: 'plan',
+                timeout: options.timeout || CONFIG.ai?.timeout || 5000,
+                signal: options.signal || null,
+                ...adapterOptions
+            });
+        } catch (err) {
+            // Structured-output rejections raised by the adapter are parse
+            // failures; everything else from the adapter is a generation failure.
+            throw tagAiStage(err, err instanceof AIValidationError ? 'parse' : 'generate');
         }
 
+        if (!result || typeof result !== 'object') {
+            throw tagAiStage(new AIValidationError('Model adapter returned empty result'), 'generate');
+        }
+
+        // Offline (mock) generations are reported so the caller never presents
+        // their text as a model answer. Their structured plans are still
+        // validated like any other plan.
+        const offline = result.offline === true;
+
         // If structured output is already present
-        if (result.structured) {
-            if (result.structured.steps && Array.isArray(result.structured.steps)) {
+        if (result.structured && typeof result.structured === 'object') {
+            if (Array.isArray(result.structured.steps)) {
                 return {
                     isPlan: true,
                     plan: result.structured,
-                    raw: result
+                    raw: result,
+                    offline
                 };
             }
-            if (result.structured.response) {
+            if (result.structured.response !== undefined) {
+                if (!isNonEmptyString(result.structured.response)) {
+                    throw tagAiStage(new AIValidationError('Direct response must be a non-empty string'), 'parse');
+                }
                 return {
                     isDirectResponse: true,
                     response: result.structured.response,
-                    raw: result
+                    raw: result,
+                    offline
                 };
             }
         }
 
         // Attempt to parse structured output from raw text
-        if (result.text) {
-            const parsed = this._adapter.parseStructuredOutput(result.text);
-            if (parsed.steps && Array.isArray(parsed.steps)) {
+        if (isNonEmptyString(result.text)) {
+            let parsed;
+            try {
+                parsed = this._adapter.parseStructuredOutput(result.text);
+            } catch (err) {
+                // Offline text is never a model answer, even when it does not parse.
+                if (offline) return { offline: true, raw: result };
+                throw tagAiStage(err, 'parse');
+            }
+            if (parsed && typeof parsed === 'object' && Array.isArray(parsed.steps)) {
                 return {
                     isPlan: true,
                     plan: parsed,
-                    raw: result
+                    raw: result,
+                    offline
                 };
             }
-            if (parsed.response) {
+            if (parsed && typeof parsed === 'object' && isNonEmptyString(parsed.response)) {
                 return {
                     isDirectResponse: true,
                     response: parsed.response,
-                    raw: result
+                    raw: result,
+                    offline
                 };
             }
-            throw new AIValidationError('Parsed JSON output did not contain valid plan steps or response');
+            if (offline) return { offline: true, raw: result };
+            throw tagAiStage(
+                new AIValidationError('Parsed JSON output did not contain valid plan steps or response'),
+                'parse'
+            );
         }
 
-        return {
-            isDirectResponse: true,
-            response: result.text || 'Understood.',
-            raw: result
-        };
+        // An empty generation is a failure, never a successful "Understood." reply.
+        if (offline) return { offline: true, raw: result };
+        throw tagAiStage(
+            new AIValidationError('Model adapter returned no usable text or structured output'),
+            'parse'
+        );
     }
 
     /**
@@ -518,8 +623,18 @@ export class AIBrain {
                 ...adapterOptions
             });
 
+            // Offline (mock) text is not a model's synthesis of the result.
+            // Keep the factual execution report instead of presenting it as
+            // the final answer.
+            if (result && result.offline === true) {
+                return executionResult?.response || 'Task completed.';
+            }
+
             return result.text || 'Task completed successfully.';
         } catch (e) {
+            // Categorized, content-free diagnostic; the factual result is kept.
+            const { kind, code } = classifyAiError(e);
+            state.logActivity(formatAiDiagnostic({ label: 'AI Brain synthesis error', stage: 'synthesize', kind, code }), 'warning');
             // Fallback response if synthesis fails
             if (executionResult && executionResult.response) {
                 return executionResult.response;

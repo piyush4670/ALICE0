@@ -93,7 +93,10 @@ export class MockAdapter extends ModelAdapter {
         const timeoutMs = options.timeout || this._config.timeout || 5000;
         const signal = options.signal || null;
 
-        return this.withTimeout(this._executeGenerate(prompt, options), timeoutMs, signal);
+        const result = await this.withTimeout(this._executeGenerate(prompt, options), timeoutMs, signal);
+        // Every mock generation is offline output, never a live model answer.
+        // The flag lets AI Brain report it as OFFLINE instead of presenting it.
+        return { ...result, offline: true };
     }
 
     async _executeGenerate(prompt, options = {}) {

@@ -522,8 +522,10 @@ function handleRequest(req, res, config, rateLimiter) {
                 { ...validation.sanitized, model: policy.model },
                 config
             );
+            // Boolean provenance only: lets the client tell live model output
+            // from the deterministic mock. Never a credential or provider detail.
             res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify(result));
+            res.end(JSON.stringify({ ...result, realProvider: config.provider !== 'mock' }));
         } catch (err) {
             const status = err.statusCode || 502;
             const code = err.code || ERROR_CODES.PROVIDER_UNAVAILABLE;

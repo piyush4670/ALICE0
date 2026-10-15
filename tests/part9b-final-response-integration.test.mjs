@@ -407,7 +407,8 @@ test('C. no detector is re-run and no second interaction context is created', as
     assert.match(code, /generateResponse\(request,\s*executionResult,\s*context\s*\|\|\s*null\)/);
     assert.match(code, /this\._synthesizeFinalResponse\(text,\s*agentResult,\s*aiResult\.context\)/);
     // No detector is invoked inside the synthesis helper.
-    const helper = code.slice(code.indexOf('_synthesizeFinalResponse('), code.indexOf('_generateBasicResponse'));
+    const helper = code.slice(code.indexOf('async _synthesizeFinalResponse('), code.indexOf('_fallbackTurn(outcome) {'));
+    assert.ok(helper.length > 200, 'helper slice must cover the synthesis method body');
     assert.doesNotMatch(helper, /detect(?:Intent|ResponseDepth|PersonalityMode|EmotionalSignal)\s*\(/);
     assert.doesNotMatch(helper, /createInteractionContext\s*\(/);
 });

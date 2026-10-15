@@ -624,14 +624,20 @@ describe('ConversationManager interaction context', { concurrency: 1 }, () => {
         }
     });
 
-    test('an unmatched request still reaches the basic fallback when AI declines', async () => {
-        await withStub(async () => ({ success: false, fallback: true }), async (stub) => {
+    test('an unmatched request gets the categorized recovery reply when AI declines (no canned greeting)', async () => {
+        // A model decline is a failure, not a licence for a keyword-driven
+        // canned reply. The categorized outcome selects a fixed recovery text.
+        await withStub(async () => ({ success: false, fallback: true, outcome: 'invalid_output', stage: 'parse' }), async (stub) => {
             const result = await conversation._processWithSkills('Hello there friend');
 
             assert.equal(stub.calls.length, 1);
             assertForwardedCall(stub.calls[0], 'Hello there friend', 'text', 'new');
-            assert.equal(result.skill, 'basic');
-            assert.match(result.response, /Hello/);
+            assert.equal(result.skill, 'fallback');
+            assert.match(result.response, /rephrasing/i);
+            assert.doesNotMatch(result.response, /Hello!|I'm here to help|not sure how to help/);
+            assert.ok(
+                state.get('activityLog').some((entry) => /AI Brain diagnostic: stage=parse outcome=invalid_output/.test(entry.message))
+            );
         });
     });
 
