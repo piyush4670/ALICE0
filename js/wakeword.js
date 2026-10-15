@@ -1,13 +1,42 @@
 /**
  * ALICE Wake Word Detection
  * ------------------------------------------------------------------
- * IMPORTANT HONESTY NOTE (Stage 1A):
+ * IMPORTANT HONESTY NOTE (Stage 1A, updated Phase 1.2B):
  * This module does NOT perform true "Hey Alice" phrase verification.
- * It is an energy-based VOICE-ACTIVITY detector: when the microphone
- * picks up a speech-length burst of audio (0.8–3.0 s) and the cooldown
- * has elapsed, it reports a wake. No speech-to-phrase matching happens
- * here, and no external wake-word engine is introduced in Stage 1A.
+ * It is an energy-based VOICE-ACTIVITY placeholder: when the microphone
+ * picks up a speech-length burst of audio (0.8–3.0 s) measured on the
+ * NORMALIZED TIME-DOMAIN RMS amplitude, and the cooldown has elapsed,
+ * it reports a wake. No speech-to-phrase matching happens here, and no
+ * external wake-word engine is introduced.
  * The `_wakePhrases` list is reserved for a future real engine.
+ *
+ * Phase 1.2B — deliberate production migration of the detector input:
+ *  - The energy read moved from the legacy frequency-domain spectrum
+ *    average (a smoothed, dB-mapped summary) to the normalized
+ *    time-domain RMS amplitude: audioManager.getRmsAudioLevel().
+ *    RMS is an AMPLITUDE measurement of the raw waveform, computed as
+ *    sqrt(mean(((byte - 128) / 128)^2)) over the analyser's waveform
+ *    samples.
+ *  - This is still NOT a VAD: there is no speech/non-speech
+ *    classification model, no noise suppression, no ML, and no
+ *    automatic threshold learning — only the input metric changed.
+ *  - This is still NOT actual wake-phrase recognition. It cannot tell
+ *    "hey alice" from a cough, a door slam, or speech of the same
+ *    duration and loudness.
+ *  - The detector state machine is otherwise untouched: silence and
+ *    speech counting, minimum speech duration, audio buffer handling,
+ *    wake debounce, cooldown, callback behaviour, Stop behaviour,
+ *    generation/session protection and cancellation all behave exactly
+ *    as before.
+ *  - Thresholds (silence 0.02, speech 0.05) were NOT recalibrated here.
+ *    The deterministic synthetic calibration in
+ *    tests/wakeRmsCalibration.test.mjs shows every speech-like fixture
+ *    still clears 0.05 under RMS and every silence/very-quiet fixture
+ *    stays below 0.02, so they are retained unchanged.
+ *  - LIVE MICROPHONE CALIBRATION REMAINS PENDING. These numbers have
+ *    never been validated against real recorded hardware, browser
+ *    automatic gain control, or real room noise; they are not a
+ *    calibrated voice-activity decision threshold.
  *
  * Stage 1A correctness fixes:
  *  - start() is guarded against concurrent invocations (no duplicate
@@ -38,7 +67,13 @@ class WakeWordDetector {
         this._onWakeDetected = null;
         this._animationFrame = null;
 
-        // Simple energy-based detection
+        // Simple energy-based detection over the normalized time-domain
+        // RMS amplitude. Both thresholds are carried over UNCHANGED from
+        // the legacy frequency-domain metric: Phase 1.2B deliberately
+        // migrates the metric without recalibrating, and the deterministic
+        // synthetic evidence (tests/wakeRmsCalibration.test.mjs) supports
+        // that. Live microphone calibration is still pending — see the
+        // module header.
         this._silenceThreshold = 0.02;
         this._speechThreshold = 0.05;
         this._minPhraseLength = 0.8; // seconds
@@ -130,7 +165,12 @@ class WakeWordDetector {
     _detectLoop() {
         if (!this._isRunning) return;
 
-        const level = audioManager.getAudioLevel();
+        // Phase 1.2B: the detector's energy input is the normalized
+        // time-domain RMS amplitude of the microphone waveform. This is an
+        // amplitude measurement only — NOT a VAD and NOT phrase recognition
+        // (see the module header). The rest of the state machine below is
+        // unchanged from the legacy-metric implementation.
+        const level = audioManager.getRmsAudioLevel();
         const now = Date.now();
 
         // Record levels so a completed speech segment has real data behind

@@ -20,12 +20,13 @@
 //   P) Permission race — Stop while permission pending; stale grant cannot
 //                        resurrect voice; re-enable works afterwards
 //   Q) Capture concurrency — parallel startCapture() shares ONE stream
-//   R) Audio level     — Phase 1.1 measurement separation: legacy
-//                        frequency-domain getAudioLevel() (the exact metric
-//                        the wake detector consumes) vs the new time-domain
-//                        getRmsAudioLevel(); silence → 0 for both, synthetic
-//                        waveform RMS values, amplitude scaling, buffer
-//                        separation, fail-safe cleanup on Stop
+//   R) Audio level     — Phase 1.1/1.2B measurement separation: legacy
+//                        frequency-domain getAudioLevel() (retained for the
+//                        HUD, no longer consumed by the wake detector) vs the
+//                        time-domain getRmsAudioLevel() (the wake detector's
+//                        input since Phase 1.2B); silence → 0 for both,
+//                        synthetic waveform RMS values, amplitude scaling,
+//                        buffer separation, fail-safe cleanup on Stop
 //
 // No production behavior is changed by this file.
 
@@ -573,10 +574,11 @@ audioManager.stopCapture();
 check('cleanup: capture stopped after concurrency test', audioManager.isCapturing() === false);
 
 // ============================================================================
-console.log('R) Audio level — legacy wake metric vs new time-domain RMS (Phase 1.1)');
+console.log('R) Audio level — legacy metric vs time-domain RMS (Phase 1.1/1.2B)');
 // Phase 1.1 split the two measurements: getAudioLevel() keeps the legacy
-// frequency-domain average the wake detector has always consumed, and
-// getRmsAudioLevel() exposes the new normalized time-domain RMS.
+// frequency-domain average (now only used for visualization) and
+// getRmsAudioLevel() exposes the normalized time-domain RMS. Phase 1.2B
+// migrated the wake detector's input from the former to the latter.
 
 // --- Fail-closed with no analyser / no capture ------------------------------
 check('no analyser: getAudioLevel() is exactly 0', audioManager.getAudioLevel() === 0);
@@ -602,8 +604,9 @@ check('silent waveform: RMS path performed exactly one time-domain read',
 const readsAfterRms = timeDomainReads;
 check('silent waveform: getAudioLevel() returns exactly 0', audioManager.getAudioLevel() === 0);
 
-// --- 2) LEGACY WALK: getAudioLevel() is the same metric the wake detector
-//        consumed before Phase 1.1 -----------------------------------------
+// --- 2) LEGACY METRIC: getAudioLevel() keeps its frequency-domain behaviour
+//        (HUD waveform/visualization) but no longer feeds the wake detector
+//        since the Phase 1.2B migration to time-domain RMS ------------------
 check('legacy getAudioLevel() never reads the time domain',
     timeDomainReads === readsAfterRms);
 const halfScaleBins = new Uint8Array(128).fill(128); // mean 128/255
@@ -614,15 +617,15 @@ const fullScaleBins = new Uint8Array(128).fill(255); // mean 255/255 = 1
 mockFrequencyBins = () => fullScaleBins;
 check('legacy getAudioLevel() = 1 for all-255 bins (unchanged since Stage 1A)',
     audioManager.getAudioLevel() === 1);
-// The wake detector itself consumes exactly this method — assert the call
-// site is unchanged rather than re-deriving it.
+// Phase 1.2B moved the wake detector onto the time-domain RMS measurement —
+// assert the production call site, and drive the real detection loop with the
+// two metrics held far apart so the recorded level proves which one it read.
+// rAF is stubbed, so the loop advances only through the frames invoked here.
 const wakeSrc = readFileSync(new NodeURL('../js/wakeword.js', import.meta.url), 'utf8');
-check('wake detector still calls audioManager.getAudioLevel()', /const level = audioManager\.getAudioLevel\(\);/.test(wakeSrc));
-check('wake detector does not call getRmsAudioLevel()',
-    !/getRmsAudioLevel/.test(wakeSrc));
-// Drive the real detection loop and confirm the value it records is the
-// legacy frequency-domain metric, not the RMS. rAF is stubbed, so the loop
-// advances only through the frames this test invokes explicitly.
+check('wake detector now calls audioManager.getRmsAudioLevel()',
+    /const level = audioManager\.getRmsAudioLevel\(\);/.test(wakeSrc));
+check('wake detector no longer references getAudioLevel()',
+    !/getAudioLevel/.test(wakeSrc));
 mockWaveform = () => 192;                       // ±64 square → RMS 0.5
 mockFrequencyBins = () => fullScaleBins;        // legacy metric → 1.0
 const detectorStarted = await wakeWordDetector.start();
@@ -631,9 +634,9 @@ check('probe: wake detection is running', wakeWordDetector.isRunning() === true)
 wakeWordDetector._audioBuffer = [];
 wakeWordDetector._detectLoop();                 // one real detection frame
 const loopLevel = wakeWordDetector._audioBuffer[wakeWordDetector._audioBuffer.length - 1];
-check('detection loop recorded the legacy metric (1), not the RMS (0.5)', loopLevel === 1);
-check('getRmsAudioLevel() for the same analyser state is 0.5',
-    Math.abs(audioManager.getRmsAudioLevel() - 0.5) < 1e-12);
+check('detection loop recorded the RMS (0.5), not the legacy metric (1.0)', loopLevel === 0.5);
+check('getAudioLevel() for the same analyser state is 1.0 (legacy, not consumed)',
+    audioManager.getAudioLevel() === 1);
 wakeWordDetector.stop();                        // leave detection stopped, as it was
 check('wake detector stopped again after the metric probe', wakeWordDetector.isRunning() === false);
 wakeWordDetector._audioBuffer = [];

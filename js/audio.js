@@ -232,13 +232,19 @@ class AudioManager {
     /**
      * Get current audio level (0-1) — LEGACY frequency-domain average.
      *
-     * This is the exact metric the wake detector (wakeword.js) has always
-     * consumed, preserved unchanged so Phase 1.1 does not silently alter the
-     * wake path's input. It averages the getByteFrequencyData() bins divided
-     * by 255 — a smoothed, dB-mapped spectrum summary, NOT a calibrated
-     * waveform amplitude. It is kept for wake detection and for the existing
-     * HUD waveform; the time-domain amplitude measurement lives in
-     * getRmsAudioLevel().
+     * Averages the getByteFrequencyData() bins divided by 255 — a smoothed,
+     * dB-mapped spectrum summary, NOT a calibrated waveform amplitude.
+     *
+     * CURRENT CALL GRAPH (Phase 1.2B): the only production consumer is the
+     * HUD waveform visualizer (js/hud.js). The wake detector
+     * (js/wakeword.js) used to read this metric and no longer does — since
+     * the Phase 1.2B migration it reads the normalized time-domain RMS from
+     * getRmsAudioLevel() instead. This method is now a display measurement:
+     * no wake decision depends on it.
+     *
+     * This does NOT perform voice-activity detection (VAD) and does NOT
+     * perform wake-phrase recognition of any kind. It is a raw spectrum
+     * summary, nothing more.
      *
      * Returns 0 when capture or the analyser buffer is unavailable.
      */
@@ -278,9 +284,18 @@ class AudioManager {
      * Returns 0 when capture, the analyser, or the time-domain buffer is
      * unavailable, and coerces any non-finite result to 0.
      *
-     * NOTE: this is a measurement fix, not a VAD. Nothing consumes it for
-     * wake detection yet, and the wake thresholds in wakeword.js were never
-     * calibrated against it — recalibration is a separate, tested change.
+     * CURRENT CALL GRAPH (Phase 1.2B): this is the wake detector's input.
+     * js/wakeword.js reads exactly this value once per detection frame and
+     * compares it against its retained 0.02 silence / 0.05 speech thresholds.
+     *
+     * HONESTY NOTE: this method measures amplitude only. It does NOT perform
+     * voice-activity detection (VAD) — there is no speech/non-speech model,
+     * no noise suppression, no automatic threshold learning and no gain
+     * calibration behind this number; it is the plain waveform RMS of
+     * whatever the analyser was handed. Neither this method nor its caller
+     * performs wake-phrase recognition: the wake detector remains a
+     * duration/loudness placeholder, and live microphone calibration of its
+     * thresholds is still pending (see the header of js/wakeword.js).
      */
     getRmsAudioLevel() {
         if (!this._analyser || !this._timeDomainData ||
